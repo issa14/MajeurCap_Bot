@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environnement virtuel
+env/
+venv/
+ENV/
+
+# Configuration (CONTIENT VOS CLÉS API !)
+config.yaml
+# On ne push jamais le fichier réel
+
+# Données de trading et état local
+positions.json
+positions.json.tmp
+Checkpoint.txt
+backtest_multi_results.csv
+
+# Logs
+*.log
+
+# Cache de données OHLCV
+cache/
+
+# IDE
+.vscode/
+.idea/
+.project
+.pydevproject
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db

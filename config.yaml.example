@@ -1,0 +1,73 @@
+# DPSK - Configuration Example
+# Renommez ce fichier en config.yaml et remplissez vos clés.
+
+watchlist:
+  - BTC/USDT
+  - ETH/USDT
+  - ARB/USDT
+  - SUI/USDT
+  - LINK/USDT
+  - ADA/USDT
+  - SOL/USDT
+  - VET/USDT
+
+timeframe: "4h"
+candles_limit: 500
+cache_ttl_minutes: 240
+max_retries: 3
+retry_delay_seconds: 5
+request_pause: 0.3
+
+# Paramètres des indicateurs (Module 2)
+ema_fast: 20
+ema_mid: 50
+ema_slow: 200
+atr_period: 10
+rsi_period: 14
+kc_ema_period: 20
+kc_atr_period: 10
+kc_mult: 2.0
+vol_ma_period: 20
+vol_surge_mult: 1.2
+adx_period: 14
+daily_filter_enabled: true
+daily_trend_strict: true
+
+# Paramètres du Module 3 (détection de signal)
+signal:
+  zigzag_window: 7
+  min_swing_diff_pct: 1.0
+  min_pivots: 4
+  fibo_proximity_pct: 1.0
+  rsi_long_zone: [30, 55]
+  rsi_short_zone: [45, 70]
+  kc_filter: true
+  sl_atr_mult: 1.5
+  tp1_rr: 1.5
+  tp2_rr: 2.5
+  min_confluences: 3
+  min_confluences_no_struct: 4
+  adx_threshold: 30
+  adx_required: true
+  
+# --- SECRÉTS (À remplir dans votre config.yaml local) ---
+telegram:
+  token: "VOTRE_BOT_TOKEN"
+  chat_id: "VOTRE_CHAT_ID"
+
+binance_testnet:
+  api_key: "VOTRE_API_KEY"
+  api_secret: "VOTRE_API_SECRET"
+  testnet: true
+
+risk:
+  capital: 1000
+  risk_per_trade: 1.0
+  max_positions: 5
+  max_exposure: 30.0
+  trailing_sl_enabled: true
+  trailing_sl_activation_tp: 1
+  trailing_sl_atr_mult: 2.0
+  
+execution:
+  auto_execute: false # Mettre à true pour activer les ordres réels

@@ -1,0 +1,72 @@
+"""
+Risk Manager (v1)
+Calcule la taille de position en fonction du risque défini dans config.yaml.
+"""
+
+import logging
+
+log = logging.getLogger(__name__)
+
+def get_active_positions_count(current_positions: list) -> int:
+    return len([p for p in current_positions if p.get("status") not in ("closed",)])
+
+def get_current_exposure_pct(current_positions: list, capital: float) -> float:
+    used_capital = 0.0
+    if current_positions:
+        for pos in current_positions:
+            if pos.get("status") not in ("closed",):
+                used_capital += pos.get("quantity", 0) * pos.get("entry", 0)
+    return (used_capital / capital) * 100.0
+
+def calculate_position_size(signal: dict, config: dict, current_positions: list = None) -> float:
+    """
+    Retourne la quantité à acheter/vendre (en unités de base) pour respecter le risque.
+    """
+    risk_cfg = config.get("risk", {})
+    capital = risk_cfg.get("capital", 1000)
+    risk_per_trade_pct = risk_cfg.get("risk_per_trade", 1.0) / 100.0
+    max_exposure_pct = risk_cfg.get("max_exposure", 30.0) / 100.0
+
+    sl_pct = signal.get("sl_pct", 1.0) / 100.0   # ex: 3.52% -> 0.0352
+    entry_price = signal["entry"]
+
+    # Capital encore disponible (en tenant compte des positions déjà ouvertes)
+    used_capital = 0.0
+    if current_positions:
+        for pos in current_positions:
+            if pos.get("status") not in ("closed",):
+                used_capital += pos.get("quantity", 0) * pos.get("entry", 0)
+
+    available_capital = capital - used_capital
+    if available_capital <= 0:
+        log.warning("Plus de capital disponible")
+        return 0.0
+
+    # Risque monétaire maximum sur ce trade
+    risk_amount = capital * risk_per_trade_pct   # ex: 1000 * 0.01 = 10 USDT
+
+    # Taille de position = risque / (distance SL en %)
+    if sl_pct == 0:
+        return 0.0
+    position_size = risk_amount / (sl_pct * entry_price)   # en unités (ex: BTC)
+
+    # Vérifier l'exposition maximale (si dépassée, réduire)
+    max_exposure_amount = capital * max_exposure_pct
+    new_total_exposure = used_capital + (position_size * entry_price)
+    if new_total_exposure > max_exposure_amount:
+        log.warning(f"Exposition maximale dépassée, réduction de la taille")
+        position_size = (max_exposure_amount - used_capital) / entry_price
+        if position_size <= 0:
+            return 0.0
+
+    return round(position_size, 6)
+
+
+def can_open_position(current_positions: list, config: dict) -> bool:
+    """Vérifie si on peut ouvrir une nouvelle position (nombre max)."""
+    max_pos = config.get("risk", {}).get("max_positions", 5)
+    active = [p for p in current_positions if p.get("status") not in ("closed",)]
+    if len(active) >= max_pos:
+        log.warning(f"Nombre max de positions atteint ({max_pos})")
+        return False
+    return True
