@@ -24,23 +24,25 @@ from risk_manager import (
 )
 from execution import execute_signal, update_sl_order
 from config_loader import get_config
+from database import db
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 log = logging.getLogger("trade_manager")
 
-# ─── Configuration ───────────────────────────────────────────────────────────
-POSITIONS_FILE = Path("positions.json")
-EXIT_PARTIAL_TP1 = True
-
-# ─── Telegram Asynchrone ──────────────────────────────────────────────────────
-async def send_telegram(text: str, config: dict):
+# ─── Telegram Helper ──────────────────────────────────────────────────────────
+async def send_telegram(text: str, config: dict, disable_notification: bool = False):
     tg_cfg = config.get("telegram", {})
     token = tg_cfg.get("token", "")
     chat_id = tg_cfg.get("chat_id", "")
     if not token or not chat_id:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_notification": disable_notification
+    }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=10) as resp:
@@ -49,38 +51,81 @@ async def send_telegram(text: str, config: dict):
     except Exception as e:
         log.error(f"Échec envoi Telegram : {e}")
 
-# ─── Gestion des positions (Écriture Atomique) ───────────────────────────────
-def load_positions() -> list:
+# ─── Configuration ───────────────────────────────────────────────────────────
+POSITIONS_FILE = Path("positions.json")
+EXIT_PARTIAL_TP1 = True
+
+# ─── Migration JSON -> SQLite ────────────────────────────────────────────────
+def migrate_json_to_sqlite():
     if not POSITIONS_FILE.exists():
-        return []
+        return
+    
     try:
         with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            positions = json.load(f)
+        
+        if not positions:
+            return
+
+        log.info(f"Migration de {len(positions)} positions depuis JSON...")
+        active_in_db = [p["symbol"] for p in db.get_active_positions()]
+        
+        for pos in positions:
+            # On n'importe que si pas déjà présent et actif (pour éviter les doublons lors de relances)
+            if pos["symbol"] not in active_in_db:
+                # Adapter le format JSON au format DB
+                db_pos = {
+                    "symbol": pos["symbol"],
+                    "direction": pos["direction"],
+                    "status": pos.get("status", "active"),
+                    "entry": pos["entry"],
+                    "entry_date": pos["entry_date"],
+                    "quantity": pos["quantity"],
+                    "sl": pos["sl"],
+                    "tp1": pos["tp1"],
+                    "tp2": pos["tp2"],
+                    "partial_exit": 1 if pos.get("partial_exit") else 0,
+                    "sl_order_id": pos.get("sl_order_id")
+                }
+                db.insert_position(db_pos)
+        
+        # Renommer le fichier après migration réussie
+        POSITIONS_FILE.rename(POSITIONS_FILE.with_suffix(".json.bak"))
+        log.info("Migration terminée avec succès. positions.json renommé en .bak")
     except Exception as e:
-        log.error(f"Erreur lecture positions.json : {e}")
-        return []
+        log.error(f"Erreur lors de la migration JSON -> SQLite : {e}")
+
+# ─── Gestion des positions (SQLite) ──────────────────────────────────────────
+def load_positions() -> list:
+    """Charge les positions actives depuis SQLite."""
+    # On tente une migration au premier chargement si le fichier existe
+    if POSITIONS_FILE.exists():
+        migrate_json_to_sqlite()
+    positions = db.get_active_positions()
+    for pos in positions:
+        pos["entry"] = pos.get("entry_price") if "entry_price" in pos else pos.get("entry")
+        pos["sl"] = pos.get("sl_price") if "sl_price" in pos else pos.get("sl")
+        pos["tp1"] = pos.get("tp1_price") if "tp1_price" in pos else pos.get("tp1")
+        pos["tp2"] = pos.get("tp2_price") if "tp2_price" in pos else pos.get("tp2")
+    return positions
 
 def save_positions(positions: list):
-    """Sauvegarde atomique pour éviter la corruption de fichier."""
-    temp_file = POSITIONS_FILE.with_suffix(".tmp")
-    try:
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(positions, f, indent=2, default=str)
-        os.replace(temp_file, POSITIONS_FILE) # Opération atomique
-    except Exception as e:
-        log.error(f"Échec sauvegarde positions : {e}")
-        if temp_file.exists():
-            temp_file.unlink()
+    """Obsolète avec SQLite - Les mises à jour sont faites en temps réel."""
+    pass
 
 # ─── Vérification d'une position (break‑even, TP/SL) ─────────────────────────
 async def check_position(pos: dict, config: dict) -> Optional[dict]:
+    # Normalisation des clés pour compatibilité JSON/DB
     symbol = pos["symbol"]
-    entry = pos["entry"]
+    entry = pos.get("entry") or pos.get("entry_price")
     direction = pos["direction"]
-    sl = pos["sl"]
-    tp1 = pos["tp1"]
-    tp2 = pos["tp2"]
+    sl = pos.get("sl") or pos.get("sl_price")
+    tp1 = pos.get("tp1") or pos.get("tp1_price")
+    tp2 = pos.get("tp2") or pos.get("tp2_price")
     partial_exit_done = pos.get("partial_exit", False)
+    
+    # On réinjecte les valeurs normalisées dans le dict pour la suite de la fonction
+    pos["entry"], pos["sl"], pos["tp1"], pos["tp2"] = entry, sl, tp1, tp2
 
     # Config Trailing SL
     risk_cfg = config.get("risk", {})
@@ -201,6 +246,8 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
     elif partial_exit_done and EXIT_PARTIAL_TP1:
         pos["status"] = "tp1_hit"
 
+    # Persistance en base de données
+    db.update_position(pos["id"], pos)
     return pos
 
 async def manage_positions():
@@ -210,16 +257,13 @@ async def manage_positions():
         log.info("Aucune position ouverte.")
         return
 
-    updated = []
     for pos in positions:
         if pos.get("status") == "closed":
             continue
-        updated_pos = await check_position(pos, config)
-        if updated_pos is not None and updated_pos.get("status") != "closed":
-            updated.append(updated_pos)
+        # check_position s'occupe maintenant de sa propre persistance
+        await check_position(pos, config)
 
-    save_positions(updated)
-    log.info(f"Positions mises à jour : {len(updated)} ouvertes")
+    log.info(f"Positions mises à jour : {len(db.get_active_positions())} ouvertes")
 
 # ─── Ouverture de position (avec sizing et exécution automatique) ────────────
 async def open_position(signal: dict, config: dict) -> dict:
@@ -283,11 +327,11 @@ async def open_position(signal: dict, config: dict) -> dict:
         "quantity": quantity,
         "entry_date": datetime.now(timezone.utc).isoformat(),
         "status": "active",
-        "partial_exit": False,
+        "partial_exit": 0,
         "sl_order_id": sl_order_id,
     }
-    positions.append(new_pos)
-    save_positions(positions)
+    
+    db.insert_position(new_pos)
 
     log.info(f"Nouvelle position ouverte : {symbol} {signal['direction']} qty={quantity}")
     return {"success": True, "quantity": quantity}

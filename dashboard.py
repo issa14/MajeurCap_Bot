@@ -6,18 +6,17 @@ from tabulate import tabulate
 from datetime import datetime
 import ccxt.async_support as ccxt_async
 from config_loader import get_config
+from database import db
 
 # ─── Configuration ───────────────────────────────────────────────────────────
-POSITIONS_FILE = Path("positions.json")
+# POSITIONS_FILE obsolète
 
 logging.basicConfig(level=logging.ERROR)
 log = logging.getLogger("dashboard")
 
 def load_local_positions():
-    if not POSITIONS_FILE.exists():
-        return []
-    with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Charge toutes les positions depuis SQLite."""
+    return db.get_all_positions()
 
 async def get_exchange(config):
     binance_cfg = config.get("binance_testnet", {})
@@ -57,7 +56,8 @@ async def get_dashboard_text():
             pnl_str = "0"
             if symbol in active_positions:
                 pos = active_positions[symbol]
-                pnl_usd = (current_price - pos['entry']) * pos['quantity'] if pos['direction'] == "LONG" else (pos['entry'] - current_price) * pos['quantity']
+                entry = pos.get('entry') or pos.get('entry_price') or 0
+                pnl_usd = (current_price - entry) * pos['quantity'] if pos['direction'] == "LONG" else (entry - current_price) * pos['quantity']
                 total_unrealized_usd += pnl_usd
                 pnl_str = f"{pnl_usd:+.2f}"
 

@@ -23,3 +23,10 @@ def get_config() -> dict:
     if _config is None:
         _config = load_config()
     return _config
+
+def reload_config() -> dict:
+    """Force le rechargement de la configuration depuis le disque."""
+    global _config
+    _config = load_config()
+    log.info("Configuration rechargée.")
+    return _config

@@ -1,165 +1,171 @@
 """
-Backtest multi-paramètres
-Teste différentes combinaisons de paramètres et classe les résultats.
+Backtest multi-scénarios - Analyse Comparative (Indicateurs & Confluences)
 """
 
 import asyncio
 import pandas as pd
 import numpy as np
-import itertools
+import copy
 import logging
 import sys
-import copy
-from datetime import datetime
-from pathlib import Path
 from config_loader import get_config
 
 sys.path.insert(0, ".")
-from module1_data_v3 import init_exchange_async, fetch_all_async
-from module2_AT import clean_ohlcv, compute_indicators
+from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_all_async
+from module2_AT import clean_ohlcv, compute_indicators, get_daily_trend_at_timestamp
 from module3_signal import generate_signal
-from module4_backtest import compute_zigzag_bt, simulate_trade
+from module4_backtest import simulate_trade
 
-# ─── Backtest pour un jeu de paramètres donné ─────────────────────────────
-async def run_single_backtest(params: dict, symbols: list = None, start_idx: int = 200):
-    """
-    Retourne un DataFrame contenant tous les trades pour ces paramètres.
-    """
+async def run_single_backtest(scenario_params: dict, symbols: list = None, start_idx: int = 150):
     base_config = get_config()
-    # Créer une config spécifique pour ce run
     config = copy.deepcopy(base_config)
-    if "signal" not in config:
-        config["signal"] = {}
-    config["signal"].update(params)
+    if "signal" not in config: config["signal"] = {}
+    
+    # Injection des paramètres du scénario
+    config["signal"].update(scenario_params)
+    if "sl_atr_mult" in scenario_params:
+        config["signal"]["sl_atr_mult"] = scenario_params["sl_atr_mult"]
+    if "trailing_sl_enabled" in scenario_params:
+        config["risk"]["trailing_sl_enabled"] = scenario_params["trailing_sl_enabled"]
+    config["candles_limit"] = 1000  # Plus d'historique pour l'analyse
 
     exchange = await init_exchange_async()
     try:
         data = await fetch_all_async(exchange, symbols=symbols, use_cache=True)
+        daily_data = {}
+        if config["signal"].get("daily_filter_enabled"):
+            daily_data = await fetch_daily_all_async(exchange, symbols=symbols, use_cache=True)
     finally:
         await exchange.close()
 
-    if not data:
-        return pd.DataFrame()
+    if not data: return pd.DataFrame()
 
     all_trades = []
     for symbol, df in data.items():
         clean = clean_ohlcv(df)
         enriched = compute_indicators(clean, config, include_incomplete=False)
-        if enriched.empty:
-            continue
+        if enriched.empty: continue
 
         n = len(enriched)
-        zigzag_window = params.get("zigzag_window", 5)
-        end_test = n - zigzag_window - 10
-        if end_test <= start_idx:
-            continue
-
         i = start_idx
-        while i < end_test:
-            df_sub = enriched.iloc[:i+1].copy()
-            if len(df_sub) < 50:
-                i += 1
-                continue
-
-            # Utiliser generate_signal avec la config modifiée
-            sig = generate_signal(symbol, df_sub, config)
+        while i < n - 10:
+            daily_trend = None
+            if config["signal"].get("daily_filter_enabled") and daily_data:
+                daily_trend = get_daily_trend_at_timestamp(symbol, enriched.iloc[i]["timestamp"], daily_data, config)
+            
+            df_sub = enriched.iloc[:i+1]
+            sig = generate_signal(symbol, df_sub, config, daily_trend=daily_trend)
+            
             if sig:
                 future = enriched.iloc[i+1:]
                 if not future.empty:
-                    trade_result = simulate_trade(future, sig)
+                    trade_result = simulate_trade(future, sig, config)
                     all_trades.append({
                         "symbol": symbol,
                         "entry_date": enriched.iloc[i]["timestamp"],
-                        "direction": sig["direction"],
-                        "entry": sig["entry"],
-                        "sl": sig["sl"],
-                        "tp1": sig["tp1"],
-                        "tp2": sig["tp2"],
-                        "result": trade_result["result"],
                         "pnl_pct": trade_result["pnl_pct"],
-                        "exit_date": enriched.loc[trade_result["exit_idx"], "timestamp"] if trade_result["result"] != "EOD" else enriched.iloc[-1]["timestamp"],
-                        "confluences": len(sig["confluences"]),
-                        "structure": sig["structure"]["trend"]
+                        "result": trade_result["result"]
                     })
                     i = trade_result["exit_idx"]
             i += 1
-
     return pd.DataFrame(all_trades)
 
-# ─── Analyse des résultats ─────────────────────────────────────────────────
 def compute_metrics(trades_df):
     if trades_df.empty:
-        return {"trades": 0, "winrate": 0, "profit_factor": 0, "pnl_total": 0, "avg_win": 0, "avg_loss": 0}
+        return {"trades": 0, "winrate": 0, "profit_factor": 0, "pnl_total": 0, "max_drawdown": 0, "sharpe": 0}
+    
     win = trades_df[trades_df["pnl_pct"] > 0]
     loss = trades_df[trades_df["pnl_pct"] <= 0]
     trades = len(trades_df)
-    winrate = len(win) / trades * 100 if trades else 0
-    avg_win = win["pnl_pct"].mean() if not win.empty else 0
-    avg_loss = loss["pnl_pct"].mean() if not loss.empty else 0
+    winrate = len(win) / trades * 100
     pnl_total = trades_df["pnl_pct"].sum()
-    profit_factor = abs(win["pnl_pct"].sum() / loss["pnl_pct"].sum()) if not loss.empty else float('inf')
+    
+    gross_win = win["pnl_pct"].sum()
+    gross_loss = abs(loss["pnl_pct"].sum())
+    profit_factor = gross_win / gross_loss if gross_loss > 0 else float('inf')
+
+    cumulative = trades_df["pnl_pct"].cumsum()
+    max_drawdown = (cumulative.cummax() - cumulative).max()
+    std = trades_df["pnl_pct"].std()
+    sharpe = (trades_df["pnl_pct"].mean() / std * np.sqrt(trades)) if std > 0 else 0
+
     return {
-        "trades": trades,
-        "winrate": winrate,
-        "profit_factor": profit_factor,
-        "pnl_total": pnl_total,
-        "avg_win": avg_win,
-        "avg_loss": avg_loss
+        "trades": trades, "winrate": winrate, "profit_factor": profit_factor,
+        "pnl_total": pnl_total, "max_drawdown": max_drawdown, "sharpe": sharpe
     }
 
-# ─── Grille de paramètres à tester ──────────────────────────────────────────
-param_grid = {
-    "adx_required": [True],
-    "adx_threshold": [20, 25, 30],
-    "min_confluences": [3, 4],
-    "zigzag_window": [5, 7],
-    "min_swing_diff_pct": [0.5, 1.0],
-    # On garde les autres fixes
-    "rsi_long_zone": [(30, 55)],
-    "rsi_short_zone": [(45, 70)],
-    "sl_atr_mult": [1.5],
-    "tp1_rr": [1.5],
-    "tp2_rr": [2.5],
-    "kc_filter": [True],
-    "fibo_proximity_pct": [1.0],
-}
-
-# ─── Générer toutes les combinaisons ───────────────────────────────────────
-keys = list(param_grid.keys())
-combinations = list(itertools.product(*param_grid.values()))
-total_runs = len(combinations)
-
 async def main():
-    logging.basicConfig(level=logging.WARNING)  # réduire le bruit pendant le backtest
-    log = logging.getLogger("multi_backtest")
-    print(f"=== BACKTEST MULTI-PARAMÈTRES ({total_runs} combinaisons) ===\n")
-
-    results = []
-    watchlist = ["BTC/USDT", "ETH/USDT", "ARB/USDT", "SUI/USDT", "LINK/USDT", "ADA/USDT", "VET/USDT"]  # sans GRT
-
-    for idx, vals in enumerate(combinations, 1):
-        params = dict(zip(keys, vals))
-        # On applique les zones RSI comme tuples déjà
-        trades_df = await run_single_backtest(params, symbols=watchlist)
-        metrics = compute_metrics(trades_df)
-        metrics["params"] = params
-        results.append(metrics)
-        print(f"[{idx}/{total_runs}] ADX_th={params['adx_threshold']} min_conf={params['min_confluences']} zigzag_w={params['zigzag_window']} swing_diff={params['min_swing_diff_pct']}  → trades={metrics['trades']} PnL={metrics['pnl_total']:.2f}% PF={metrics['profit_factor']:.2f}")
-
-    # Classement par profit factor décroissant
-    results_df = pd.DataFrame(results)
-    results_df = results_df.sort_values("profit_factor", ascending=False)
+    logging.basicConfig(level=logging.WARNING)
     
-    print("\n\n🏆 CLASSEMENT (profit factor décroissant)")
-    print("="*80)
-    for i, row in results_df.iterrows():
-        p = row["params"]
-        print(f"PF={row['profit_factor']:.2f}  PnL={row['pnl_total']:.1f}%  trades={row['trades']}  WR={row['winrate']:.1f}%  "
-              f"ADX={p['adx_threshold']} min_conf={p['min_confluences']} zigzag_w={p['zigzag_window']} swing_diff={p['min_swing_diff_pct']}")
+    scenarios = [
+        ("adx_only",    True,  False, False, 1.5, False), # Actuel
+        ("adx_sl2.0",   True,  False, False, 2.0, False), # SL plus large
+        ("adx_trailing", True,  False, False, 1.5, True),  # Trailing SL
+        ("adx_opti",    True,  False, False, 2.0, True),  # Combiné
+    ]
+    
+    confluences_to_test = [3]
+    watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
+    
+    results = []
 
-    # Sauvegarder dans un CSV
-    results_df.to_csv("backtest_multi_results.csv", index=False)
-    print("\n✅ Résultats sauvegardés dans backtest_multi_results.csv")
+    print(f"{'Scénario':<15} | {'SL':<4} | {'Trail':<5} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
+    print("-" * 90)
+
+    for name, adx, daily, kc, sl_mult, trailing in scenarios:
+        for conf in confluences_to_test:
+            params = {
+                "adx_required": adx,
+                "daily_filter_enabled": daily,
+                "kc_filter": kc,
+                "min_confluences": conf,
+                "zigzag_window": 3,
+                "min_swing_diff_pct": 0.5,
+                "daily_trend_strict": False,
+                "sl_atr_mult": sl_mult,
+                "trailing_sl_enabled": trailing
+            }
+            
+            trades_df = await run_single_backtest(params, symbols=watchlist)
+            m = compute_metrics(trades_df)
+            
+            print(f"{name:<15} | {sl_mult:<4} | {str(trailing):<5} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
+
+    # Déterminer le meilleur scénario
+    # Critères : PF > 1.5, WR > 45%, DD < 20%, Trades >= 30
+    best = None
+    qualified = [r for r in results if r['profit_factor'] > 1.5 and r['winrate'] > 45 and r['max_drawdown'] < 20 and r['trades'] >= 30]
+    
+    if not qualified:
+        # Fallback : Meilleur Profit Factor si aucun ne remplit tout
+        print("\n⚠️ Aucun scénario ne remplit 100% des critères stricts. Recherche du meilleur compromis...")
+        qualified = [r for r in results if r['trades'] >= 20] # Au moins 20 trades pour être significatif
+        if qualified:
+            best = max(qualified, key=lambda x: x['profit_factor'])
+    else:
+        best = max(qualified, key=lambda x: x['profit_factor'])
+
+    if best:
+        print(f"\n🏆 MEILLEUR SCÉNARIO : {best['scenario']} (Conf {best['min_confluences']})")
+        print(f"PF: {best['profit_factor']:.2f} | PnL: {best['pnl_total']:.2f}% | DD: {best['max_drawdown']:.1f}%")
+        
+        p = best['params']
+        yaml_config = f"""
+# CONFIGURATION PRODUCTION OPTIMALE
+signal:
+  zigzag_window: {p['zigzag_window']}
+  min_swing_diff_pct: {p['min_swing_diff_pct']}
+  min_confluences: {p['min_confluences']}
+  min_confluences_no_struct: {p['min_confluences'] + 1}
+  adx_required: {str(p['adx_required']).lower()}
+  adx_threshold: 25
+  daily_filter_enabled: {str(p['daily_filter_enabled']).lower()}
+  daily_trend_strict: false
+  kc_filter: {str(p['kc_filter']).lower()}
+"""
+        print(yaml_config)
+    else:
+        print("\n❌ Données insuffisantes pour déterminer un gagnant.")
 
 if __name__ == "__main__":
     asyncio.run(main())

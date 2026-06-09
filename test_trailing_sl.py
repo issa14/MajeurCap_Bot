@@ -54,17 +54,20 @@ class TestTrailingSL(unittest.IsolatedAsyncioTestCase):
 
     async def test_trailing_sl_logic(self):
         import trade_manager
+        from unittest.mock import MagicMock
         config = get_config()
         # Inject mocks
         trade_manager.init_exchange_async = mock_init_exchange_async
         trade_manager.fetch_all_async = mock_fetch_all_async
         trade_manager.compute_indicators = mock_compute_indicators
+        trade_manager.db = MagicMock()
         async def mock_send_telegram(x, cfg):
             print(f"TELEGRAM: {x}")
         trade_manager.send_telegram = mock_send_telegram
         
         # Initial position
         pos = {
+            "id": 1,
             "symbol": "BTC/USDT",
             "direction": "LONG",
             "entry": 100.0,

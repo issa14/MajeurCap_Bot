@@ -68,16 +68,19 @@ python test_signal_generation.py
 python test_indicators.py
 python test_trailing_sl.py
 python test_integration.py
-python check_connection.py
-python dashboard.py
-python bot_listener.py
-```
+- `dashboard.py`: Dashboard view for account equity and positions.
+- `database.py`: SQLite abstraction layer for persistent storage.
+- `positions.json.bak`: Legacy position storage (migrated to SQLite).
+- `trading_bot.db`: SQLite database for active and historical trades.
 
+## Building and Running
+...
 ### Configuration
 Edit `config.yaml` to set your:
 - Watchlist symbols.
 - Risk parameters (`capital`, `risk_per_trade`).
 - **Trailing Stop-Loss settings** (`trailing_sl_enabled`, `trailing_sl_atr_mult`).
+- **Backtest settings** (`fee_pct`, `slippage_pct`).
 - Binance API keys (Testnet recommended).
 - Telegram Bot token and Chat ID.
 
@@ -86,11 +89,24 @@ Edit `config.yaml` to set your:
 - **Modularity:** Keep logic separated into `moduleX` files.
 - **Asynchronous Code:** Use `asyncio` and `ccxt.async_support` for all network-bound operations.
 - **Logging:** Use the standard `logging` library. Logs are written to `bot.log`.
-- **Error Handling:** Always wrap API calls and execution logic in try/except blocks to prevent bot crashes.
-- **Type Hinting:** Use Python type hints for better code clarity and IDE support.
-- **State Management:** Active positions are tracked in `positions.json`. Do not modify this file manually while the bot is running.
+- **Error Handling:** Always wrap API calls and execution logic in try/except blocks. Execution now includes emergency exits if SL placement fails.
+- **Type Hinting:** Use Python type hints for better code clarity.
+- **State Management:** Active positions are tracked in `trading_bot.db` (SQLite). Use `DatabaseManager` for all CRUD operations.
 
-## TODO / Future Improvements
-- [ ] Support for Binance Mainnet (with caution).
-- [ ] Implement a GUI or web dashboard for monitoring.
-- [ ] Add more complex strategy confluences (e.g. Volume Profile, Liquidity).
+## TODO / Institutional Roadmap
+
+### Phase 3 : Intelligence Stratégique & Gestion du Risque (EN COURS)
+- [ ] **Filtre de Marché Global :** Intégrer une vérification de la tendance BTC sur une unité de temps supérieure (Daily/4H) pour filtrer les alts.
+- [ ] **Raffinage BOS/CHoCH :** Exiger une clôture (Close) au-delà du niveau pivot pour confirmer une cassure de structure, plutôt qu'une simple mèche.
+- [ ] **Position Sizing Dynamique :** Ajuster le risque par trade en fonction de l'ADX (force de la tendance).
+
+### Phase 4 : Excellence Opérationnelle & Monitoring
+- [ ] **Mode Daemon :** Transformer le scan live en boucle infinie synchronisée sur les clôtures de bougies.
+- [ ] **Signal Context Logging :** Enregistrer l'état complet du marché (indicateurs, structure) lors de chaque signal pour analyse post-mortem.
+- [ ] **Support Binance Mainnet :** Préparer le passage en réel avec des garde-fous supplémentaires.
+
+### Phase 5 : Dette Technique & Refactoring (Audit Juin 2026)
+- [ ] **Async Integrity (bot_listener) :** Remplacer `requests` par `aiohttp` dans `bot_listener.py` pour éviter de bloquer l'event loop.
+- [ ] **Config Hot Reload :** Implémenter `reload_config()` dans `config_loader.py` et déplacer le chargement de la config à l'intérieur de `run_scan()` dans `bot_telegram.py`.
+- [ ] **Advanced Metrics :** Intégrer le calcul du Max Drawdown, du ratio de Sharpe et du ratio de Calmar dans `compute_metrics` (backtesting).
+

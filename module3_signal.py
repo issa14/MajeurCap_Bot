@@ -9,52 +9,6 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-# ─── Zigzag alternant (Optimisé et Vectorisé) ────────────────────────────────
-def compute_zigzag(df: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """Calcule le zigzag en utilisant la config injectée."""
-    df = df.copy()
-    
-    sig_cfg = config.get("signal", {})
-    window = sig_cfg.get("zigzag_window", 5)
-    min_diff_pct = sig_cfg.get("min_swing_diff_pct", 0.5)
-
-    # 1. Identification vectorisée des candidats pivots
-    df['is_max'] = df['high'] == df['high'].rolling(window=window*2+1, center=True).max()
-    df['is_min'] = df['low'] == df['low'].rolling(window=window*2+1, center=True).min()
-    
-    raw_pivots = np.zeros(len(df), dtype=int)
-    raw_pivots[df['is_max']] = 1
-    raw_pivots[df['is_min']] = -1
-    
-    # 2. Filtrage alternance
-    pivots = np.zeros(len(df), dtype=int)
-    last_pivot_type = 0
-    last_pivot_price = None
-    last_pivot_idx = None
-
-    candidate_indices = np.where(raw_pivots != 0)[0]
-    
-    for i in candidate_indices:
-        current_type = raw_pivots[i]
-        current_price = df.iloc[i]["high"] if current_type == 1 else df.iloc[i]["low"]
-
-        if last_pivot_type == 0:
-            pivots[i] = current_type
-            last_pivot_type, last_pivot_price, last_pivot_idx = current_type, current_price, i
-        elif current_type != last_pivot_type:
-            if abs(current_price - last_pivot_price) / last_pivot_price * 100 >= min_diff_pct:
-                pivots[i] = current_type
-                last_pivot_type, last_pivot_price, last_pivot_idx = current_type, current_price, i
-        else:
-            if (current_type == 1 and current_price > last_pivot_price) or \
-               (current_type == -1 and current_price < last_pivot_price):
-                pivots[last_pivot_idx] = 0
-                pivots[i] = current_type
-                last_pivot_price, last_pivot_idx = current_price, i
-
-    df["pivot"] = pivots
-    return df.drop(columns=['is_max', 'is_min'])
-
 # ─── Fibonacci basé sur les swings ────────────────────────────────────────────
 def compute_fibonacci_from_swings(df: pd.DataFrame) -> dict:
     pivot_rows = df[df["pivot"] != 0]
@@ -104,8 +58,16 @@ def detect_structure(df: pd.DataFrame, config: dict) -> dict:
         elif highs[-1] < highs[-2] and lows[-1] < lows[-2]: result["trend"] = "bearish"
 
     close = df["close"].iloc[-1]
-    if result["trend"] == "bullish" and close > highs[-2]: result["bos"] = "bullish"
-    elif result["trend"] == "bearish" and close < lows[-2]: result["bos"] = "bearish"
+    if result["trend"] == "bullish":
+        if close > highs[-2]:
+            result["bos"] = "bullish"
+        if close < lows[-1]:
+            result["choch"] = "bearish"
+    elif result["trend"] == "bearish":
+        if close < lows[-2]:
+            result["bos"] = "bearish"
+        if close > highs[-1]:
+            result["choch"] = "bullish"
     
     return result
 
@@ -173,7 +135,14 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
     if adx_required and df.iloc[-1].get("adx", 0) < adx_threshold: return None
     if daily_trend and daily_trend.get("trend") == "neutral": return None
 
-    df_z = compute_zigzag(df, config)
+    # Performance Fix: Use pre-computed pivots if available (avoid O(n^2) in backtest)
+    if "pivot" in df.columns:
+        df_z = df
+    else:
+        # Fallback pour le live si non inclus dans compute_indicators
+        from module2_AT import compute_zigzag
+        df_z = compute_zigzag(df, config)
+
     fibo = compute_fibonacci_from_swings(df_z)
     structure = detect_structure(df_z, config)
     threshold = min_conf if structure["pivots_count"] >= min_pivots else min_conf_no_str
@@ -188,7 +157,8 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
         if len(confluences) >= threshold:
             levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
             best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences, 
-                           "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"], **levels}
+                           "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"], 
+                           "adx": df.iloc[-1].get("adx", 0), **levels}
             break
 
     return best_signal

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import requests
+import aiohttp
 from pathlib import Path
 from dashboard import get_dashboard_text
 from config_loader import get_config
@@ -15,13 +15,25 @@ def _get_tg_config():
     return tg_cfg.get("token", ""), str(tg_cfg.get("chat_id", ""))
 
 # ─── Fonctions API Telegram ──────────────────────────────────────────────────
-def send_message(text):
+async def send_message(text, session=None):
     token, chat_id = _get_tg_config()
     if not token or not chat_id:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    
+    try:
+        if session:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                if resp.status != 200:
+                    log.error(f"Telegram error: {await resp.text()}")
+        else:
+            async with aiohttp.ClientSession() as new_session:
+                async with new_session.post(url, json=payload, timeout=10) as resp:
+                    if resp.status != 200:
+                        log.error(f"Telegram error: {await resp.text()}")
+    except Exception as e:
+        log.error(f"Failed to send Telegram message: {e}")
 
 async def poll_updates():
     """Boucle de polling pour écouter les messages Telegram."""
@@ -30,46 +42,54 @@ async def poll_updates():
     
     token, chat_id = _get_tg_config()
 
-    while True:
-        try:
-            if not token or not chat_id:
-                token, chat_id = _get_tg_config()
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
                 if not token or not chat_id:
-                    await asyncio.sleep(10)
-                    continue
+                    token, chat_id = _get_tg_config()
+                    if not token or not chat_id:
+                        await asyncio.sleep(10)
+                        continue
 
-            url = f"https://api.telegram.org/bot{token}/getUpdates"
-            params = {"offset": last_update_id + 1, "timeout": 30}
-            resp = requests.get(url, params=params, timeout=35).json()
-
-            if not resp.get("ok"):
-                await asyncio.sleep(5)
-                continue
-
-            for update in resp.get("result", []):
-                last_update_id = update["update_id"]
-                message = update.get("message", {})
-                text = message.get("text", "")
-                sender_id = str(message.get("from", {}).get("id", ""))
-
-                # Sécurité : On ne répond qu'à VOTRE Chat ID
-                if sender_id != chat_id:
-                    continue
-
-                if text.startswith("/db") or text.startswith("/dashboard"):
-                    log.info("📥 Commande reçue : Dashboard")
-                    send_message("⌛ Génération du dashboard...")
-                    db_text = await get_dashboard_text()
-                    send_message(db_text)
+                url = f"https://api.telegram.org/bot{token}/getUpdates"
+                params = {"offset": last_update_id + 1, "timeout": 30}
                 
-                elif text.startswith("/start"):
-                    send_message("👋 Bonjour ! Envoyez `/db` pour voir l'état du bot.")
+                async with session.get(url, params=params, timeout=35) as resp:
+                    if resp.status != 200:
+                        log.error(f"Telegram polling error: {resp.status}")
+                        await asyncio.sleep(5)
+                        continue
+                    
+                    data = await resp.json()
 
-        except Exception as e:
-            log.error(f"Erreur polling : {e}")
-            await asyncio.sleep(10)
-        
-        await asyncio.sleep(1)
+                if not data.get("ok"):
+                    await asyncio.sleep(5)
+                    continue
+
+                for update in data.get("result", []):
+                    last_update_id = update["update_id"]
+                    message = update.get("message", {})
+                    text = message.get("text", "")
+                    sender_id = str(message.get("from", {}).get("id", ""))
+
+                    # Sécurité : On ne répond qu'à VOTRE Chat ID
+                    if sender_id != chat_id:
+                        continue
+
+                    if text.startswith("/db") or text.startswith("/dashboard"):
+                        log.info("📥 Commande reçue : Dashboard")
+                        await send_message("⌛ Génération du dashboard...", session=session)
+                        db_text = await get_dashboard_text()
+                        await send_message(db_text, session=session)
+                    
+                    elif text.startswith("/start"):
+                        await send_message("👋 Bonjour ! Envoyez `/db` pour voir l'état du bot.", session=session)
+
+            except Exception as e:
+                log.error(f"Erreur polling : {e}")
+                await asyncio.sleep(10)
+            
+            await asyncio.sleep(0.1)
 
 if __name__ == "__main__":
     asyncio.run(poll_updates())

@@ -164,7 +164,7 @@ async def fetch_ohlcv_async(
             log.error(f"{symbol} — erreur inattendue : {e}")
             return None
 
-    log.error(f"{symbol} — échec après {MAX_RETRIES} tentatives")
+    log.error(f"{symbol} — échec après {params['max_retries']} tentatives")
     return None
 
 # ─── Fetch batch asynchrone ───────────────────────────────────────────────────

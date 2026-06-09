@@ -14,10 +14,7 @@ from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_al
 from module2_AT import analyze_all
 from module3_signal import scan_all
 from trade_manager import manage_positions, open_position, load_positions
-from config_loader import get_config
-
-# ─── Configuration ───────────────────────────────────────────────────────────
-config = get_config()
+from config_loader import get_config, reload_config
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -32,6 +29,7 @@ log = logging.getLogger("telegram_bot")
 
 # ─── Fonctions Telegram Asynchrones ──────────────────────────────────────
 async def send_telegram_message(text: str, disable_notification: bool = False):
+    config = get_config()
     tg_cfg = config.get("telegram", {})
     token = tg_cfg.get("token", "")
     chat_id = tg_cfg.get("chat_id", "")
@@ -90,6 +88,7 @@ def format_signal(sig: dict) -> str:
 # ─── Boucle principale ──────────────────────────────────────────────────
 async def run_scan():
     log.info("Début du scan...")
+    config = reload_config()
 
     # 1. Gestion des positions existantes
     await manage_positions()
@@ -118,30 +117,31 @@ async def run_scan():
         for sig in signals:
             pair = sig["symbol"]
             
-            # Notification immédiate (non-bloquante)
-            asyncio.create_task(send_telegram_message(f"🔔 Signal reçu pour {pair} : Analyse en cours..."))
+            # 1. Envoi systématique des détails du signal
+            msg_detail = format_signal(sig)
+            await send_telegram_message(msg_detail)
             
-            # Tentative d'ouverture avec détails
+            # 2. Tentative d'ouverture
             result = await open_position(sig, config)
             
             if result["success"]:
                 # Notification exécution réussie
-                asyncio.create_task(send_telegram_message(f"✅ Ordre envoyé pour {pair} : Entrée à {sig['entry']}"))
-                
-                # Détails complets du signal (silencieux)
-                sig["quantity"] = result["quantity"]
-                msg_detail = format_signal(sig)
-                asyncio.create_task(send_telegram_message(msg_detail, disable_notification=True))
+                quantity = result.get("quantity", 0)
+                msg_exec = f"✅ <b>Ordre exécuté</b> pour {pair}\nQuantité : <code>{quantity:.6f}</code>\nEntrée : <code>{sig['entry']}</code>"
+                await send_telegram_message(msg_exec)
             else:
                 reason = result.get("reason", "Inconnue")
                 
                 if reason == "already_open":
                     log.info(f"{pair} — signal ignoré (position déjà ouverte)")
-                elif "current" in result:
-                    msg_reject = f"🚫 Signal ignoré pour {pair} : {reason} ({result['current']} / {result['limit']})"
-                    asyncio.create_task(send_telegram_message(msg_reject))
+                    # Optionnel: on peut envoyer un petit message discret
+                    # await send_telegram_message(f"ℹ️ {pair} : Position déjà ouverte.")
                 else:
-                    log.info(f"{pair} — signal ignoré ({reason})")
+                    msg_reject = f"🚫 <b>Ordre non passé</b> pour {pair}\nRaison : {reason}"
+                    if "current" in result:
+                        msg_reject += f" ({result['current']} / {result['limit']})"
+                    
+                    await send_telegram_message(msg_reject)
             
             await asyncio.sleep(0.5)
 

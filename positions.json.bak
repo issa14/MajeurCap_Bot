@@ -1,0 +1,39 @@
+[
+  {
+    "symbol": "ADA/USDT",
+    "direction": "SHORT",
+    "entry": 0.1624,
+    "sl": 0.175051,
+    "tp1": 0.143424,
+    "tp2": 0.130773,
+    "quantity": 790.453847,
+    "entry_date": "2026-06-05T15:00:16.092612+00:00",
+    "status": "active",
+    "partial_exit": false
+  },
+  {
+    "symbol": "BTC/USDT",
+    "direction": "SHORT",
+    "entry": 61964.99,
+    "sl": 64268.238465,
+    "tp1": 58510.117302,
+    "tp2": 56206.868837,
+    "quantity": 0.000382,
+    "entry_date": "2026-06-05T15:00:19.453187+00:00",
+    "status": "active",
+    "partial_exit": false
+  },
+  {
+    "symbol": "SUI/USDT",
+    "direction": "SHORT",
+    "entry": 0.758,
+    "sl": 0.80324,
+    "tp1": 0.69014,
+    "tp2": 0.6449,
+    "quantity": 195.197453,
+    "entry_date": "2026-06-08T13:11:39.323672+00:00",
+    "status": "active",
+    "partial_exit": false,
+    "sl_order_id": "425972"
+  }
+]

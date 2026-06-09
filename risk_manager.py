@@ -15,7 +15,8 @@ def get_current_exposure_pct(current_positions: list, capital: float) -> float:
     if current_positions:
         for pos in current_positions:
             if pos.get("status") not in ("closed",):
-                used_capital += pos.get("quantity", 0) * pos.get("entry", 0)
+                entry = pos.get("entry") or pos.get("entry_price") or 0
+                used_capital += pos.get("quantity", 0) * entry
     return (used_capital / capital) * 100.0
 
 def calculate_position_size(signal: dict, config: dict, current_positions: list = None) -> float:
@@ -24,8 +25,19 @@ def calculate_position_size(signal: dict, config: dict, current_positions: list 
     """
     risk_cfg = config.get("risk", {})
     capital = risk_cfg.get("capital", 1000)
-    risk_per_trade_pct = risk_cfg.get("risk_per_trade", 1.0) / 100.0
+    base_risk = risk_cfg.get("risk_per_trade", 1.0) / 100.0
     max_exposure_pct = risk_cfg.get("max_exposure", 30.0) / 100.0
+
+    # Dynamic Position Sizing based on ADX (trend strength)
+    dynamic_adx = risk_cfg.get("dynamic_sizing_adx", True)
+    if dynamic_adx and "adx" in signal:
+        adx = signal["adx"]
+        # ADX reference is 30. Scale risk between 0.5x and 1.5x of base risk.
+        multiplier = max(0.5, min(1.5, adx / 30.0))
+        risk_per_trade_pct = base_risk * multiplier
+        log.info(f"Dynamic Position Sizing (ADX={adx:.1f}): Risk adjusted to {risk_per_trade_pct*100:.2f}% (multiplier={multiplier:.2f})")
+    else:
+        risk_per_trade_pct = base_risk
 
     sl_pct = signal.get("sl_pct", 1.0) / 100.0   # ex: 3.52% -> 0.0352
     entry_price = signal["entry"]
@@ -35,7 +47,8 @@ def calculate_position_size(signal: dict, config: dict, current_positions: list 
     if current_positions:
         for pos in current_positions:
             if pos.get("status") not in ("closed",):
-                used_capital += pos.get("quantity", 0) * pos.get("entry", 0)
+                entry = pos.get("entry") or pos.get("entry_price") or 0
+                used_capital += pos.get("quantity", 0) * entry
 
     available_capital = capital - used_capital
     if available_capital <= 0:

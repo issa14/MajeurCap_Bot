@@ -10,6 +10,65 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# ─── Zigzag alternant (Causal - Sans look-ahead) ──────────────────────────────
+def compute_zigzag(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Calcule le zigzag de manière causale.
+    Un pivot à l'index 'i' est identifié à l'instant 'i + window'.
+    """
+    df = df.copy()
+    
+    sig_cfg = config.get("signal", {})
+    window = sig_cfg.get("zigzag_window", 5)
+    min_diff_pct = sig_cfg.get("min_swing_diff_pct", 0.5)
+
+    # 1. Identification causale des candidats pivots
+    # Un point est un max/min local s'il est le plus haut/bas sur [i-window, i+window]
+    # Pour être causal à l'instant 't', on regarde si t-window était un extremum sur [t-2*window, t]
+    df['is_max'] = df['high'].rolling(window=window*2+1).apply(lambda x: x[window] == max(x), raw=True) == 1
+    df['is_min'] = df['low'].rolling(window=window*2+1).apply(lambda x: x[window] == min(x), raw=True) == 1
+    
+    # On décale pour enregistrer le pivot à son index de occurrence réel (t - window)
+    raw_pivots = np.zeros(len(df), dtype=int)
+    for idx in df[df['is_max']].index:
+        if idx >= window:
+            raw_pivots[idx - window] = 1
+            
+    for idx in df[df['is_min']].index:
+        if idx >= window:
+            raw_pivots[idx - window] = -1
+    
+    # 2. Filtrage alternance (reste identique mais travaille sur des pivots retardés)
+    pivots = np.zeros(len(df), dtype=int)
+    last_pivot_type = 0
+    last_pivot_price = None
+    last_pivot_idx = None
+
+    candidate_indices = np.where(raw_pivots != 0)[0]
+    
+    for i in candidate_indices:
+        current_type = raw_pivots[i]
+        # On récupère le prix à l'index réel du pivot (i est déjà l'index du pivot car identifié par rolling)
+        current_price = df.iloc[i]["high"] if current_type == 1 else df.iloc[i]["low"]
+
+        if last_pivot_type == 0:
+            pivots[i] = current_type
+            last_pivot_type, last_pivot_price, last_pivot_idx = current_type, current_price, i
+        elif current_type != last_pivot_type:
+            if abs(current_price - last_pivot_price) / last_pivot_price * 100 >= min_diff_pct:
+                pivots[i] = current_type
+                last_pivot_type, last_pivot_price, last_pivot_idx = current_type, current_price, i
+        else:
+            # Même type : on garde le plus extrême
+            if (current_type == 1 and current_price > last_pivot_price) or \
+               (current_type == -1 and current_price < last_pivot_price):
+                pivots[last_pivot_idx] = 0
+                pivots[i] = current_type
+                last_pivot_price, last_pivot_idx = current_price, i
+
+    df["pivot"] = pivots
+    return df.drop(columns=['is_max', 'is_min'])
+
 # ─── Nettoyage ───────────────────────────────────────────────────────────────
 def clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     required = {"timestamp", "open", "high", "low", "close", "volume"}
@@ -92,6 +151,9 @@ def compute_indicators(df: pd.DataFrame, config: dict, include_incomplete: bool 
     df["ema_bullish"]  = df["ema_20"] > df["ema_50"]
     df["vol_surge"]    = df["volume"] > (df["vol_ma20"] * vol_surge_mult)
 
+    # Ajout du zigzag
+    df = compute_zigzag(df, config)
+
     log.debug(f"Indicateurs calculés : {len(df)} bougies conservées")
     return df
 
@@ -132,12 +194,45 @@ def compute_daily_trend(df_daily: pd.DataFrame, strict: bool = True) -> dict:
         "ema_50": last["ema_50"],
     }
 
+def get_daily_trend_at_timestamp(symbol: str, timestamp, daily_data: dict, config: dict) -> dict:
+    if not daily_data or symbol not in daily_data:
+        return {"trend": "neutral", "reason": "no daily data"}
+    
+    df_daily = daily_data[symbol]
+    # Slice daily data causally: only keep candles with timestamp < current 4h timestamp
+    df_daily_sub = df_daily[df_daily["timestamp"] < timestamp]
+    if len(df_daily_sub) < 50:
+        return {"trend": "neutral", "reason": "not enough daily candles"}
+        
+    daily_strict = config.get("daily_trend_strict", config.get("signal", {}).get("daily_trend_strict", True))
+    
+    # Global Market Filter based on BTC trend
+    btc_symbol = next((s for s in daily_data.keys() if "BTC/" in s), "BTC/USDT")
+    btc_trend = None
+    if symbol != btc_symbol and btc_symbol in daily_data:
+        df_btc = daily_data[btc_symbol]
+        df_btc_sub = df_btc[df_btc["timestamp"] < timestamp]
+        if len(df_btc_sub) >= 50:
+            btc_trend = compute_daily_trend(df_btc_sub, strict=daily_strict)
+            
+    symbol_trend = compute_daily_trend(df_daily_sub, strict=daily_strict)
+    
+    if symbol != btc_symbol and btc_trend:
+        if btc_trend["trend"] == "bearish" and symbol_trend["trend"] == "bullish":
+            symbol_trend["trend"] = "neutral"
+            symbol_trend["reason"] = "BTC is bearish"
+        elif btc_trend["trend"] == "neutral":
+            symbol_trend["trend"] = "neutral"
+            symbol_trend["reason"] = "BTC is neutral"
+            
+    return symbol_trend
+
 # ─── Batch ────────────────────────────────────────────────────────────────────
 def analyze_all(data: dict, config: dict, include_incomplete: bool = False, daily_data: Optional[dict] = None) -> dict:
     """Analyse toutes les paires avec injection de config."""
     results = {}
-    daily_filter_config = config.get("signal", {}).get("daily_filter_enabled", False)
-    daily_strict = config.get("signal", {}).get("daily_trend_strict", True)
+    daily_filter_config = config.get("daily_filter_enabled", config.get("signal", {}).get("daily_filter_enabled", False))
+    daily_strict = config.get("daily_trend_strict", config.get("signal", {}).get("daily_trend_strict", True))
 
     for symbol, df in data.items():
         try:
@@ -152,10 +247,28 @@ def analyze_all(data: dict, config: dict, include_incomplete: bool = False, dail
 
             res = {"df": enriched, "indicators_ok": True}
 
-            if daily_filter_config and daily_data and symbol in daily_data:
-                daily_trend = compute_daily_trend(daily_data[symbol], strict=daily_strict)
-                res["daily_trend"] = daily_trend
-                log.info(f"{symbol} — tendance daily : {daily_trend['trend']}")
+            if daily_filter_config and daily_data:
+                btc_symbol = next((s for s in daily_data.keys() if "BTC/" in s), "BTC/USDT")
+                btc_trend = None
+                if btc_symbol in daily_data:
+                    btc_trend = compute_daily_trend(daily_data[btc_symbol], strict=daily_strict)
+
+                if symbol in daily_data:
+                    symbol_trend = compute_daily_trend(daily_data[symbol], strict=daily_strict)
+                else:
+                    symbol_trend = {"trend": "neutral", "reason": "no data"}
+
+                # Global Market Filter for altcoins based on BTC trend
+                if symbol != btc_symbol and btc_trend:
+                    if btc_trend["trend"] == "bearish" and symbol_trend["trend"] == "bullish":
+                        symbol_trend["trend"] = "neutral"
+                        symbol_trend["reason"] = "BTC is bearish"
+                    elif btc_trend["trend"] == "neutral":
+                        symbol_trend["trend"] = "neutral"
+                        symbol_trend["reason"] = "BTC is neutral"
+
+                res["daily_trend"] = symbol_trend
+                log.info(f"{symbol} — tendance daily : {symbol_trend['trend']} (raison: {symbol_trend.get('reason', 'normal')})")
             else:
                 res["daily_trend"] = None
 

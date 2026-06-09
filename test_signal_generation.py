@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import copy
 from config_loader import get_config
+from module2_AT import compute_zigzag
 from module3_signal import (
-    compute_zigzag, 
     compute_fibonacci_from_swings, 
     detect_structure, 
     generate_signal,
