@@ -21,9 +21,9 @@ log = logging.getLogger("DPSK")
 
 async def run_live():
     """Lance une itération du bot de trading."""
-    from bot_telegram import run_scan
-    log.info("🚀 Démarrage du scan de trading Live...")
-    await run_scan()
+    from bot_telegram import main as bot_main
+    log.info("🚀 Démarrage du bot de trading Live (Bot Telegram)...")
+    await bot_main()
 
 async def run_listener():
     """Lance le listener de commandes Telegram."""

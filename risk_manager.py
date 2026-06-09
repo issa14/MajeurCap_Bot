@@ -37,8 +37,13 @@ def calculate_position_size(signal: dict, config: dict, current_positions: list 
         risk_per_trade_pct = base_risk * multiplier
         log.info(f"Dynamic Position Sizing (ADX={adx:.1f}): Risk adjusted to {risk_per_trade_pct*100:.2f}% (multiplier={multiplier:.2f})")
     else:
+        if dynamic_adx and "adx" not in signal:
+            log.warning(
+                "dynamic_sizing_adx est activé mais la clé 'adx' est absente du signal "
+                "pour ce symbole — sizing de base appliqué (risk_per_trade=%.2f%%)",
+                base_risk * 100
+            )
         risk_per_trade_pct = base_risk
-
     sl_pct = signal.get("sl_pct", 1.0) / 100.0   # ex: 3.52% -> 0.0352
     entry_price = signal["entry"]
 

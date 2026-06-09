@@ -7,6 +7,7 @@ import logging
 import sys
 import html
 import aiohttp
+import signal
 from pathlib import Path
 
 sys.path.insert(0, ".")
@@ -15,6 +16,7 @@ from module2_AT import analyze_all
 from module3_signal import scan_all
 from trade_manager import manage_positions, open_position, load_positions
 from config_loader import get_config, reload_config
+from logging.handlers import RotatingFileHandler
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -22,7 +24,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("bot.log", encoding="utf-8"),
+        RotatingFileHandler("bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
     ],
 )
 log = logging.getLogger("telegram_bot")
@@ -86,7 +88,7 @@ def format_signal(sig: dict) -> str:
     return text
 
 # ─── Boucle principale ──────────────────────────────────────────────────
-async def run_scan():
+async def run_scan_cycle():
     log.info("Début du scan...")
     config = reload_config()
 
@@ -103,7 +105,7 @@ async def run_scan():
 
         daily_data = {}
         if config.get("signal", {}).get("daily_filter_enabled", False):
-            daily_data = await fetch_daily_all_async(exchange, use_cache=True)
+            daily_data = await fetch_daily_all_async(exchange, symbols=None)
 
         # 3. Analyse technique et génération des signaux
         analyzed = analyze_all(data, config, include_incomplete=False, daily_data=daily_data)
@@ -134,8 +136,6 @@ async def run_scan():
                 
                 if reason == "already_open":
                     log.info(f"{pair} — signal ignoré (position déjà ouverte)")
-                    # Optionnel: on peut envoyer un petit message discret
-                    # await send_telegram_message(f"ℹ️ {pair} : Position déjà ouverte.")
                 else:
                     msg_reject = f"🚫 <b>Ordre non passé</b> pour {pair}\nRaison : {reason}"
                     if "current" in result:
@@ -148,5 +148,20 @@ async def run_scan():
     finally:
         await exchange.close()
 
+async def main():
+    stop_event = asyncio.Event()
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+    
+    while not stop_event.is_set():
+        await run_scan_cycle()
+        # Scan toutes les 60s
+        for _ in range(60):
+            if stop_event.is_set(): break
+            await asyncio.sleep(1)
+    
+    log.info("Signal d'arrêt reçu — arrêt propre du bot après le cycle en cours.")
+
 if __name__ == "__main__":
-    asyncio.run(run_scan())
+    asyncio.run(main())

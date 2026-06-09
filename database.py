@@ -109,8 +109,8 @@ class DatabaseManager:
             cursor.execute("SELECT * FROM positions")
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_realized_pnl_today(self, capital: float) -> float:
-        """Calcule le PnL réalisé de la journée en % du capital initial."""
+    def get_realized_pnl_today(self) -> float:
+        """Calcule la somme des PnL réalisés (%) de la journée."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             # Utilisation de UTC pour la cohérence avec Binance

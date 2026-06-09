@@ -53,7 +53,6 @@ async def send_telegram(text: str, config: dict, disable_notification: bool = Fa
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 POSITIONS_FILE = Path("positions.json")
-EXIT_PARTIAL_TP1 = True
 
 # ─── Migration JSON -> SQLite ────────────────────────────────────────────────
 def migrate_json_to_sqlite():
@@ -123,6 +122,8 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
     tp1 = pos.get("tp1") or pos.get("tp1_price")
     tp2 = pos.get("tp2") or pos.get("tp2_price")
     partial_exit_done = pos.get("partial_exit", False)
+    
+    EXIT_PARTIAL_TP1 = config.get("risk", {}).get("partial_exit_tp1", True)
     
     # On réinjecte les valeurs normalisées dans le dict pour la suite de la fonction
     pos["entry"], pos["sl"], pos["tp1"], pos["tp2"] = entry, sl, tp1, tp2
@@ -270,10 +271,9 @@ async def check_circuit_breaker(config: dict) -> bool:
     """Retourne True si le bot est bloqué (emergency stop)."""
     risk_cfg = config.get("risk", {})
     daily_loss_limit = risk_cfg.get("daily_loss_limit", -5.0) 
-    capital = risk_cfg.get("capital", 1000)
     
     # Récupère le PnL réalisé en % de la journée
-    realized_pnl_pct = db.get_realized_pnl_today(capital)
+    realized_pnl_pct = db.get_realized_pnl_today()
     
     if realized_pnl_pct <= daily_loss_limit:
         msg = f"🚨 <b>EMERGENCY STOP</b> - Drawdown journalier atteint : {realized_pnl_pct:.2f}% (Seuil: {daily_loss_limit}%)"
