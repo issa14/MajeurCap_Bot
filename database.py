@@ -109,5 +109,23 @@ class DatabaseManager:
             cursor.execute("SELECT * FROM positions")
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_realized_pnl_today(self, capital: float) -> float:
+        """Calcule le PnL réalisé de la journée en % du capital initial."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # Utilisation de UTC pour la cohérence avec Binance
+            today = datetime.now(timezone.utc).date().isoformat()
+            
+            # Somme des PnL pour les trades fermés aujourd'hui
+            cursor.execute("""
+                SELECT SUM(pnl_pct) FROM positions 
+                WHERE status = 'closed' 
+                AND date(exit_date) = ?
+            """, (today,))
+            result = cursor.fetchone()[0]
+            
+            # Le PnL est déjà en pourcentage, on retourne la somme des %
+            return result if result is not None else 0.0
+
 # Instance globale pour simplicité (ou à injecter)
 db = DatabaseManager()

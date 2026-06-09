@@ -65,6 +65,7 @@ risk:
   risk_per_trade: 1.0
   max_positions: 5
   max_exposure: 30.0
+  daily_loss_limit: -5.0
   trailing_sl_enabled: true
   trailing_sl_activation_tp: 1
   trailing_sl_atr_mult: 2.0

@@ -266,9 +266,29 @@ async def manage_positions():
     log.info(f"Positions mises à jour : {len(db.get_active_positions())} ouvertes")
 
 # ─── Ouverture de position (avec sizing et exécution automatique) ────────────
+async def check_circuit_breaker(config: dict) -> bool:
+    """Retourne True si le bot est bloqué (emergency stop)."""
+    risk_cfg = config.get("risk", {})
+    daily_loss_limit = risk_cfg.get("daily_loss_limit", -5.0) 
+    capital = risk_cfg.get("capital", 1000)
+    
+    # Récupère le PnL réalisé en % de la journée
+    realized_pnl_pct = db.get_realized_pnl_today(capital)
+    
+    if realized_pnl_pct <= daily_loss_limit:
+        msg = f"🚨 <b>EMERGENCY STOP</b> - Drawdown journalier atteint : {realized_pnl_pct:.2f}% (Seuil: {daily_loss_limit}%)"
+        await send_telegram(msg, config)
+        log.critical(msg)
+        return True
+    return False
+
 async def open_position(signal: dict, config: dict) -> dict:
     positions = load_positions()
     symbol = signal["symbol"]
+
+    # 0. Vérifier Circuit Breaker
+    if await check_circuit_breaker(config):
+        return {"success": False, "reason": "Circuit breaker déclenché"}
 
     # 1. Vérifier doublon
     for p in positions:
