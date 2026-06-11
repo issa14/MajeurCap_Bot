@@ -51,12 +51,18 @@ async def run_check():
     log.info("🔍 Vérification de la connexion Binance...")
     await connection_check()
 
+async def run_all():
+    """Lance simultanément le bot de trading et le listener Telegram."""
+    log.info("🔥 Démarrage du bot COMPLET (Live Trading + Telegram Listener)...")
+    await asyncio.gather(run_live(), run_listener())
+
 def main():
     parser = argparse.ArgumentParser(description="DPSK Crypto Trading Bot CLI")
     
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--live", action="store_true", help="Lancer un cycle de trading live")
     group.add_argument("--listen", action="store_true", help="Lancer le listener de commandes Telegram (polling)")
+    group.add_argument("--all", action="store_true", help="Lancer le bot complet (live + listener)")
     group.add_argument("--backtest", action="store_true", help="Lancer le backtest multi-paramètres")
     group.add_argument("--check", action="store_true", help="Vérifier la connexion aux APIs")
 
@@ -67,6 +73,8 @@ def main():
             asyncio.run(run_live())
         elif args.listen:
             asyncio.run(run_listener())
+        elif args.all:
+            asyncio.run(run_all())
         elif args.backtest:
             asyncio.run(run_backtest())
         elif args.check:

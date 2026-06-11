@@ -10,7 +10,7 @@ def load_config() -> dict:
     """Charge la configuration depuis le fichier YAML."""
     if not CONFIG_PATH.exists():
         log.error(f"Fichier de configuration introuvable : {CONFIG_PATH}")
-        raise FileNotFoundError(f"config.yaml est requis.")
+        raise FileNotFoundError("config.yaml est requis.")
     
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)

@@ -9,7 +9,6 @@ import json
 import time
 import logging
 import os
-import yaml
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional

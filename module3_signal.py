@@ -3,7 +3,6 @@ Module 3 — Détection signal v6 (Injection de dépendances)
 """
 
 import pandas as pd
-import numpy as np
 import logging
 from typing import Optional
 

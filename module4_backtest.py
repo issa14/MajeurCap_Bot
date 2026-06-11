@@ -7,13 +7,11 @@ import numpy as np
 import logging
 import asyncio
 import sys
-from pathlib import Path
-from typing import Optional
 from config_loader import get_config
 
 sys.path.insert(0, ".")
 from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_all_async
-from module2_AT import clean_ohlcv, compute_indicators, get_daily_trend_at_timestamp, compute_zigzag
+from module2_AT import clean_ohlcv, compute_indicators, get_daily_trend_at_timestamp
 from module3_signal import (
     compute_fibonacci_from_swings,
     detect_structure,
@@ -21,6 +19,7 @@ from module3_signal import (
     compute_levels,
     generate_signal
 )
+from metrics import compute_metrics
 
 # ─── Simulation d'un trade avec suivi bougie par bougie ────────────────────
 def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
@@ -108,52 +107,10 @@ def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
     net_pnl = gross_pnl - (fee_pct * 2)
     return {"result": "EOD", "pnl_pct": net_pnl * 100, "exit_idx": df_future.index[-1]}
 
-def compute_metrics(trades_df: pd.DataFrame, config: dict = None) -> dict:
-    if trades_df.empty:
-        return {
-            "trades": 0, "winrate": 0, "profit_factor": 0, "pnl_total": 0,
-            "avg_win": 0, "avg_loss": 0, "max_drawdown": 0, "sharpe": 0, "calmar": 0
-        }
-
-    win = trades_df[trades_df["pnl_pct"] > 0]
-    loss = trades_df[trades_df["pnl_pct"] <= 0]
-    trades = len(trades_df)
-    winrate = len(win) / trades * 100 if trades else 0
-    avg_win = win["pnl_pct"].mean() if not win.empty else 0
-    avg_loss = loss["pnl_pct"].mean() if not loss.empty else 0
-    pnl_total = trades_df["pnl_pct"].sum()
-    profit_factor = abs(win["pnl_pct"].sum() / loss["pnl_pct"].sum()) if not loss.empty else float('inf')
-
-    # Drawdown sur courbe equity réelle (plus précis que PnL cumulé brut)
-    capital = (config or {}).get("risk", {}).get("capital", 1000)
-    equity = capital * (1 + trades_df["pnl_pct"].cumsum() / 100)
-    running_max = equity.cummax()
-    # Drawdown relatif : % de perte par rapport au pic d'équité précédent
-    max_drawdown = ((running_max - equity) / running_max).max() * 100
-
-    # Sharpe ratio calculation: mean / std_dev * sqrt(number of trades)
-    # This is the correct approach for trade-based performance evaluation.
-    sharpe = (trades_df["pnl_pct"].mean() / std_dev * np.sqrt(len(trades_df))) if std_dev > 0 else 0
-
-    # Calmar = PnL total / Max Drawdown (tous deux en %)
-    calmar = (pnl_total / max_drawdown) if max_drawdown > 0 else float('inf')
-
-    return {
-        "trades": trades,
-        "winrate": winrate,
-        "profit_factor": profit_factor,
-        "pnl_total": pnl_total,
-        "avg_win": avg_win,
-        "avg_loss": avg_loss,
-        "max_drawdown": max_drawdown,
-        "sharpe": sharpe,
-        "calmar": calmar
-    }
-
 # ─── Backtest principal corrigé ─────────────────────────────────────────────
 async def run_backtest(symbols: list = None, start_idx: int = 200, exclude_eod: bool = False):
     config = get_config()
-    daily_filter_enabled = config.get("daily_filter_enabled", config.get("signal", {}).get("daily_filter_enabled", False))
+    daily_filter_enabled = config.get("signal", {}).get("daily_filter_enabled", False)
     daily_data = {}
     exchange = await init_exchange_async()
     try:
@@ -221,7 +178,7 @@ async def run_backtest(symbols: list = None, start_idx: int = 200, exclude_eod: 
         print("Aucun trade après filtrage.")
         return
 
-    metrics = compute_metrics(trades_df, config=config)
+    metrics = compute_metrics(trades_df, initial_capital=config.get("risk", {}).get("capital", 1000))
 
     print(f"\n{'='*60}")
     print(f"RÉSULTATS BACKTEST ({'hors EOD' if exclude_eod else 'tous trades'})")
@@ -234,7 +191,7 @@ async def run_backtest(symbols: list = None, start_idx: int = 200, exclude_eod: 
     print(f"Max Drawdown : {metrics['max_drawdown']:.2f}%")
     print(f"Sharpe Ratio : {metrics['sharpe']:.2f}")
     print(f"Calmar Ratio : {metrics['calmar']:.2f}")
-    print(f"\n--- Par symbole ---")
+    print("\n--- Par symbole ---")
     for sym in trades_df["symbol"].unique():
         sub = trades_df[trades_df["symbol"] == sym]
         w = sub[sub["pnl_pct"] > 0]

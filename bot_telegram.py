@@ -8,21 +8,40 @@ import sys
 import html
 import aiohttp
 import signal
-from pathlib import Path
+import os
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, ".")
 from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_all_async
 from module2_AT import analyze_all
 from module3_signal import scan_all
-from trade_manager import manage_positions, open_position, load_positions
+from trade_manager import manage_positions, open_position
 from config_loader import get_config, reload_config
+from database import db
 from logging.handlers import RotatingFileHandler
 
 # ─── Déduplication des signaux ───────────────────────────────────────────────
 # Mémorise le dernier envoi Telegram par symbole pour éviter le spam
-_signal_sent_at: dict[str, datetime] = {}
+_signal_sent_at: dict[str, datetime] = db.get_signal_cooldowns()
 # Le cooldown est lu depuis config.yaml → signal.cooldown_minutes (défaut 240)
+
+# ─── Hot-Reload optimisé ─────────────────────────────────────────────────────
+_config_mtime = 0.0
+
+def reload_config_if_changed() -> dict:
+    """Relit config.yaml uniquement si le fichier a été modifié sur le disque."""
+    global _config_mtime
+    config_path = "config.yaml"
+    try:
+        mtime = os.path.getmtime(config_path)
+        if mtime != _config_mtime:
+            _config_mtime = mtime
+            log.info("Configuration modifiée détectée, rechargement...")
+            return reload_config()
+    except Exception as e:
+        log.error(f"Erreur lors de la vérification du mtime de la config : {e}")
+    
+    return get_config()
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -96,7 +115,7 @@ def format_signal(sig: dict) -> str:
 # ─── Boucle principale ──────────────────────────────────────────────────
 async def run_scan_cycle():
     log.info("Début du scan...")
-    config = reload_config()
+    config = reload_config_if_changed()
 
     # 1. Gestion des positions existantes
     await manage_positions()
@@ -141,6 +160,7 @@ async def run_scan_cycle():
             if result["success"]:
                 # Nouvelle position ouverte : on notifie et on mémorise
                 _signal_sent_at[pair] = now
+                db.update_signal_cooldown(pair, now)
                 msg_detail = format_signal(sig)
                 await send_telegram_message(msg_detail)
                 quantity = result.get("quantity", 0)
@@ -157,6 +177,7 @@ async def run_scan_cycle():
                 else:
                     # Rejet légitime (risk, exposition, ADX…) : on notifie une fois
                     _signal_sent_at[pair] = now
+                    db.update_signal_cooldown(pair, now)
                     msg_detail = format_signal(sig)
                     await send_telegram_message(msg_detail)
 

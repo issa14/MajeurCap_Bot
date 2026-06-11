@@ -1,11 +1,9 @@
 import unittest
-import asyncio
-import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
 # Import the core components to test
 import bot_telegram

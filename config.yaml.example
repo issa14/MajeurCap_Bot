@@ -30,12 +30,12 @@ kc_mult: 2.0
 vol_ma_period: 20
 vol_surge_mult: 1.2
 adx_period: 14
-daily_filter_enabled: true
 daily_trend_strict: true
 
 # Paramètres du Module 3 (détection de signal)
 signal:
   cooldown_minutes: 240
+  daily_filter_enabled: true
   adx_required: true
   adx_threshold: 25
   fibo_proximity_pct: 1.0

@@ -15,6 +15,7 @@ from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_al
 from module2_AT import clean_ohlcv, compute_indicators, get_daily_trend_at_timestamp
 from module3_signal import generate_signal
 from module4_backtest import simulate_trade
+from metrics import compute_metrics
 
 async def run_single_backtest(scenario_params: dict, symbols: list = None, start_idx: int = 150):
     base_config = get_config()
@@ -66,35 +67,6 @@ async def run_single_backtest(scenario_params: dict, symbols: list = None, start
             i += 1
     return pd.DataFrame(all_trades)
 
-def compute_metrics(trades_df):
-    if trades_df.empty:
-        return {"trades": 0, "winrate": 0, "profit_factor": 0, "pnl_total": 0, "max_drawdown": 0, "sharpe": 0}
-    
-    win = trades_df[trades_df["pnl_pct"] > 0]
-    loss = trades_df[trades_df["pnl_pct"] <= 0]
-    trades = len(trades_df)
-    winrate = len(win) / trades * 100
-    pnl_total = trades_df["pnl_pct"].sum()
-    
-    gross_win = win["pnl_pct"].sum()
-    gross_loss = abs(loss["pnl_pct"].sum())
-    profit_factor = gross_win / gross_loss if gross_loss > 0 else float('inf')
-
-    cumulative = trades_df["pnl_pct"].cumsum()
-    max_drawdown = (cumulative.cummax() - cumulative).max()
-    
-    # Sharpe annualisé (6 bougies 4h par jour * 365 jours = 2190 bougies/an)
-    std = trades_df["pnl_pct"].std()
-    
-    # Sharpe ratio calculation: mean / std_dev * sqrt(number of trades)
-    # Consistent approach for trade-based performance evaluation.
-    sharpe = (trades_df["pnl_pct"].mean() / std * np.sqrt(len(trades_df))) if std > 0 else 0
-
-    return {
-        "trades": trades, "winrate": winrate, "profit_factor": profit_factor,
-        "pnl_total": pnl_total, "max_drawdown": max_drawdown, "sharpe": sharpe
-    }
-
 async def main():
     logging.basicConfig(level=logging.WARNING)
     
@@ -128,7 +100,7 @@ async def main():
             }
             
             trades_df = await run_single_backtest(params, symbols=watchlist)
-            m = compute_metrics(trades_df)
+            m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
             
             res_entry = {
                 "scenario": name,

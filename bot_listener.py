@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import aiohttp
-from pathlib import Path
 from dashboard import get_dashboard_text
 from config_loader import get_config
 

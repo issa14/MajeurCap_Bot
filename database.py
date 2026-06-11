@@ -41,6 +41,41 @@ class DatabaseManager:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_symbol 
                 ON positions (symbol) WHERE status != 'closed'
             """)
+
+            # Table pour le cooldown des signaux (anti-spam Telegram)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS signal_cooldowns (
+                    symbol TEXT PRIMARY KEY,
+                    last_sent_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+
+    def get_signal_cooldowns(self) -> dict:
+        """Charge tous les cooldowns depuis la DB."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT symbol, last_sent_at FROM signal_cooldowns")
+            rows = cursor.fetchall()
+            # Convertir en dict {symbol: datetime}
+            cooldowns = {}
+            for symbol, last_sent_str in rows:
+                try:
+                    # On stocke en ISO format pour la simplicité
+                    cooldowns[symbol] = datetime.fromisoformat(last_sent_str)
+                except Exception:
+                    continue
+            return cooldowns
+
+    def update_signal_cooldown(self, symbol: str, last_sent_at: datetime):
+        """Met à jour ou insère un cooldown pour un symbole."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO signal_cooldowns (symbol, last_sent_at)
+                VALUES (?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET last_sent_at = excluded.last_sent_at
+            """, (symbol, last_sent_at.isoformat()))
             conn.commit()
 
     def insert_position(self, pos_data: dict) -> int:
@@ -64,30 +99,37 @@ class DatabaseManager:
             return cursor.lastrowid
 
     def update_position(self, pos_id: int, updates: dict):
-        """Met à jour une position existante."""
+        """Met à jour une position existante en filtrant l'ID et les alias."""
         if not updates:
             return
-        
+
+        # Mapper les clés dict vers les noms de colonnes réels
+        column_map = {
+            "entry": "entry_price",
+            "sl": "sl_price",
+            "tp1": "tp1_price",
+            "tp2": "tp2_price"
+        }
+
+        # On construit un dict propre pour éviter de mettre à jour la même colonne deux fois
+        # (ex: 'sl' et 'sl_price' pointent vers la même colonne). 
+        # La dernière valeur rencontrée dans 'updates' gagne.
+        clean_updates = {}
+        for k, v in updates.items():
+            if k == "id":
+                continue
+            col = column_map.get(k, k)
+            clean_updates[col] = v
+
+        if not clean_updates:
+            return
+
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            # Mapper les clés dict vers les noms de colonnes si nécessaire
-            # On gère ici les cas spécifiques de trade_manager.py
-            column_map = {
-                "entry": "entry_price",
-                "sl": "sl_price",
-                "tp1": "tp1_price",
-                "tp2": "tp2_price"
-            }
-            
-            set_clause = []
-            values = []
-            for k, v in updates.items():
-                col = column_map.get(k, k)
-                set_clause.append(f"{col} = ?")
-                values.append(v)
-            
+            set_clause = [f"{col} = ?" for col in clean_updates.keys()]
+            values = list(clean_updates.values())
             values.append(pos_id)
+
             query = f"UPDATE positions SET {', '.join(set_clause)} WHERE id = ?"
             cursor.execute(query, values)
             conn.commit()

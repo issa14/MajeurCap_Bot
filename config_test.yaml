@@ -30,11 +30,11 @@ kc_mult: 2.0
 vol_ma_period: 20
 vol_surge_mult: 1.2
 adx_period: 14
-daily_filter_enabled: false
 daily_trend_strict: true
 
 # Paramètres du Module 3 (détection de signal)
 signal:
+  daily_filter_enabled: false
   zigzag_window: 7
   min_swing_diff_pct: 1.0
   min_pivots: 4

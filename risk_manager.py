@@ -72,7 +72,7 @@ def calculate_position_size(signal: dict, config: dict, current_positions: list 
     max_exposure_amount = capital * max_exposure_pct
     new_total_exposure = used_capital + (position_size * entry_price)
     if new_total_exposure > max_exposure_amount:
-        log.warning(f"Exposition maximale dépassée, réduction de la taille")
+        log.warning("Exposition maximale dépassée, réduction de la taille")
         position_size = (max_exposure_amount - used_capital) / entry_price
         if position_size <= 0:
             return 0.0

@@ -8,7 +8,6 @@ import asyncio
 import sys
 import pandas as pd
 import aiohttp
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -28,6 +27,9 @@ from database import db
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 log = logging.getLogger("trade_manager")
+
+# ─── Variables d'état ─────────────────────────────────────────────────────────
+_circuit_breaker_alerted = False
 
 # ─── Telegram Helper ──────────────────────────────────────────────────────────
 async def send_telegram(text: str, config: dict, disable_notification: bool = False):
@@ -113,7 +115,7 @@ def save_positions(positions: list):
     pass
 
 # ─── Vérification d'une position (break‑even, TP/SL) ─────────────────────────
-async def check_position(pos: dict, config: dict) -> Optional[dict]:
+async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dict]:
     # Normalisation des clés pour compatibilité JSON/DB
     symbol = pos["symbol"]
     entry = pos.get("entry") or pos.get("entry_price")
@@ -126,7 +128,10 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
     EXIT_PARTIAL_TP1 = config.get("risk", {}).get("partial_exit_tp1", True)
     
     # On réinjecte les valeurs normalisées dans le dict pour la suite de la fonction
-    pos["entry"], pos["sl"], pos["tp1"], pos["tp2"] = entry, sl, tp1, tp2
+    pos["entry_price"] = pos["entry"] = entry
+    pos["sl_price"] = pos["sl"] = sl
+    pos["tp1_price"] = pos["tp1"] = tp1
+    pos["tp2_price"] = pos["tp2"] = tp2
 
     # Config Trailing SL
     risk_cfg = config.get("risk", {})
@@ -134,11 +139,19 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
     activation_tp = risk_cfg.get("trailing_sl_activation_tp", 1)
     trailing_atr_mult = risk_cfg.get("trailing_sl_atr_mult", 2.0)
 
-    exchange = await init_exchange_async()
+    # Si pas d'exchange fourni, on en ouvre un temporairement
+    local_exchange = None
+    if exchange is None:
+        local_exchange = await init_exchange_async()
+        exch_to_use = local_exchange
+    else:
+        exch_to_use = exchange
+
     try:
-        data = await fetch_all_async(exchange, symbols=[symbol], use_cache=True)
+        data = await fetch_all_async(exch_to_use, symbols=[symbol], use_cache=True)
     finally:
-        await exchange.close()
+        if local_exchange:
+            await local_exchange.close()
 
     if not data or symbol not in data:
         return pos
@@ -173,8 +186,10 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
                     new_sl = entry
                     asyncio.create_task(send_telegram(f"🟢 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
                     # Persist immediately to prevent duplicate notifications
+                    pos["sl_price"] = pos["sl"] = new_sl
                     pos["partial_exit"] = 1
-                    db.update_position(pos["id"], pos)
+                    clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
+                    db.update_position(pos["id"], clean_updates)
                 else:
                     exit_reason = "TP1"
                     exit_price = tp1
@@ -200,8 +215,10 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
                     new_sl = entry
                     asyncio.create_task(send_telegram(f"🔴 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
                     # Persist immediately to prevent duplicate notifications
+                    pos["sl_price"] = pos["sl"] = new_sl
                     pos["partial_exit"] = 1
-                    db.update_position(pos["id"], pos)
+                    clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
+                    db.update_position(pos["id"], clean_updates)
                 else:
                     exit_reason = "TP1"
                     exit_price = tp1
@@ -238,8 +255,8 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
             else:
                 log.error(f"Échec mise à jour SL sur exchange pour {symbol}")
 
-    pos["sl"] = new_sl
-    pos["partial_exit"] = partial_exit_done
+    pos["sl_price"] = pos["sl"] = new_sl
+    pos["partial_exit"] = 1 if partial_exit_done else 0
 
     if exit_reason:
         pos["status"] = "closed"
@@ -254,7 +271,8 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
         pos["status"] = "tp1_hit"
 
     # Persistance en base de données
-    db.update_position(pos["id"], pos)
+    clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
+    db.update_position(pos["id"], clean_updates)
     return pos
 
 async def manage_positions():
@@ -264,30 +282,39 @@ async def manage_positions():
         log.info("Aucune position ouverte.")
         return
 
-    for pos in positions:
-        if pos.get("status") == "closed":
-            continue
-        # check_position s'occupe maintenant de sa propre persistance
-        await check_position(pos, config)
+    exchange = await init_exchange_async()
+    try:
+        for pos in positions:
+            if pos.get("status") == "closed":
+                continue
+            # On passe l'exchange partagé pour éviter d'ouvrir une connexion par position
+            await check_position(pos, config, exchange=exchange)
+    finally:
+        await exchange.close()
 
     log.info(f"Positions mises à jour : {len(db.get_active_positions())} ouvertes")
 
 # ─── Ouverture de position (avec sizing et exécution automatique) ────────────
 async def check_circuit_breaker(config: dict) -> bool:
     """Retourne True si le bot est bloqué (emergency stop)."""
+    global _circuit_breaker_alerted
     risk_cfg = config.get("risk", {})
-    daily_loss_limit = risk_cfg.get("daily_loss_limit", -5.0) 
-    
+    daily_loss_limit = risk_cfg.get("daily_loss_limit", -5.0)
+
     # Récupère le PnL réalisé en % de la journée
     realized_pnl_pct = db.get_realized_pnl_today()
-    
+
     if realized_pnl_pct <= daily_loss_limit:
         msg = f"🚨 <b>EMERGENCY STOP</b> - Drawdown journalier atteint : {realized_pnl_pct:.2f}% (Seuil: {daily_loss_limit}%)"
-        await send_telegram(msg, config)
-        log.critical(msg)
+        if not _circuit_breaker_alerted:
+            await send_telegram(msg, config)
+            log.critical(msg)
+            _circuit_breaker_alerted = True
         return True
-    return False
 
+    # Reset si le PnL remonte au-dessus du seuil (nouvelle journée par exemple)
+    _circuit_breaker_alerted = False
+    return False
 async def open_position(signal: dict, config: dict) -> dict:
     positions = load_positions()
     symbol = signal["symbol"]
