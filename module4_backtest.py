@@ -108,7 +108,7 @@ def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
     net_pnl = gross_pnl - (fee_pct * 2)
     return {"result": "EOD", "pnl_pct": net_pnl * 100, "exit_idx": df_future.index[-1]}
 
-def compute_metrics(trades_df: pd.DataFrame) -> dict:
+def compute_metrics(trades_df: pd.DataFrame, config: dict = None) -> dict:
     if trades_df.empty:
         return {
             "trades": 0, "winrate": 0, "profit_factor": 0, "pnl_total": 0,
@@ -124,17 +124,18 @@ def compute_metrics(trades_df: pd.DataFrame) -> dict:
     pnl_total = trades_df["pnl_pct"].sum()
     profit_factor = abs(win["pnl_pct"].sum() / loss["pnl_pct"].sum()) if not loss.empty else float('inf')
 
-    # Drawdown
-    cumulative_pnl = trades_df["pnl_pct"].cumsum()
-    running_max = cumulative_pnl.cummax()
-    drawdown = running_max - cumulative_pnl
-    max_drawdown = drawdown.max()
+    # Drawdown sur courbe equity réelle (plus précis que PnL cumulé brut)
+    capital = (config or {}).get("risk", {}).get("capital", 1000)
+    equity = capital * (1 + trades_df["pnl_pct"].cumsum() / 100)
+    running_max = equity.cummax()
+    # Drawdown relatif : % de perte par rapport au pic d'équité précédent
+    max_drawdown = ((running_max - equity) / running_max).max() * 100
 
-    # Sharpe (simplifié sur les trades)
-    std_dev = trades_df["pnl_pct"].std()
-    sharpe = (trades_df["pnl_pct"].mean() / std_dev * np.sqrt(trades)) if std_dev > 0 else 0
+    # Sharpe ratio calculation: mean / std_dev * sqrt(number of trades)
+    # This is the correct approach for trade-based performance evaluation.
+    sharpe = (trades_df["pnl_pct"].mean() / std_dev * np.sqrt(len(trades_df))) if std_dev > 0 else 0
 
-    # Calmar
+    # Calmar = PnL total / Max Drawdown (tous deux en %)
     calmar = (pnl_total / max_drawdown) if max_drawdown > 0 else float('inf')
 
     return {
@@ -220,7 +221,7 @@ async def run_backtest(symbols: list = None, start_idx: int = 200, exclude_eod: 
         print("Aucun trade après filtrage.")
         return
 
-    metrics = compute_metrics(trades_df)
+    metrics = compute_metrics(trades_df, config=config)
 
     print(f"\n{'='*60}")
     print(f"RÉSULTATS BACKTEST ({'hors EOD' if exclude_eod else 'tous trades'})")

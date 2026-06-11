@@ -137,7 +137,12 @@ async def run_scan_cycle():
                 if reason == "already_open":
                     log.info(f"{pair} — signal ignoré (position déjà ouverte)")
                 else:
-                    msg_reject = f"🚫 <b>Ordre non passé</b> pour {pair}\nRaison : {reason}"
+                    # Enrichissement du message avec contexte technique si disponible
+                    display_reason = reason
+                    if reason == "ADX trop faible":
+                        display_reason = f"ADX trop faible ({sig.get('adx', 0):.1f} < {config.get('signal', {}).get('adx_threshold')})"
+                    
+                    msg_reject = f"🚫 <b>Ordre non passé</b> pour {pair}\nRaison : {display_reason}"
                     if "current" in result:
                         msg_reject += f" ({result['current']} / {result['limit']})"
                     

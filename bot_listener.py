@@ -12,7 +12,12 @@ log = logging.getLogger("bot_listener")
 def _get_tg_config():
     config = get_config()
     tg_cfg = config.get("telegram", {})
-    return tg_cfg.get("token", ""), str(tg_cfg.get("chat_id", ""))
+    token = tg_cfg.get("token", "")
+    chat_id = str(tg_cfg.get("chat_id", ""))
+    # allowed_user_id : ID Telegram de l'utilisateur autorisé à envoyer des commandes.
+    # Distinct du chat_id (destination des messages). Fallback sur chat_id si absent.
+    allowed_user_id = str(tg_cfg.get("allowed_user_id", chat_id))
+    return token, chat_id, allowed_user_id
 
 # ─── Fonctions API Telegram ──────────────────────────────────────────────────
 async def send_message(text, session=None):
@@ -40,13 +45,13 @@ async def poll_updates():
     last_update_id = 0
     log.info("📡 Bot Listener démarré. En attente de commandes sur Telegram...")
     
-    token, chat_id = _get_tg_config()
+    token, chat_id, allowed_user_id = _get_tg_config()
 
     async with aiohttp.ClientSession() as session:
         while True:
             try:
                 if not token or not chat_id:
-                    token, chat_id = _get_tg_config()
+                    token, chat_id, allowed_user_id = _get_tg_config()
                     if not token or not chat_id:
                         await asyncio.sleep(10)
                         continue
@@ -72,8 +77,10 @@ async def poll_updates():
                     text = message.get("text", "")
                     sender_id = str(message.get("from", {}).get("id", ""))
 
-                    # Sécurité : On ne répond qu'à VOTRE Chat ID
-                    if sender_id != chat_id:
+                    # Sécurité : On ne répond qu'à l'utilisateur autorisé (allowed_user_id)
+                    # NE PAS comparer avec chat_id (= destination du bot, pas l'expéditeur)
+                    if sender_id != allowed_user_id:
+                        log.warning(f"Message rejeté — sender_id non autorisé : {sender_id}")
                         continue
 
                     if text.startswith("/db") or text.startswith("/dashboard"):

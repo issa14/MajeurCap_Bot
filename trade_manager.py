@@ -172,6 +172,9 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
                 if EXIT_PARTIAL_TP1:
                     new_sl = entry
                     asyncio.create_task(send_telegram(f"🟢 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
+                    # Persist immediately to prevent duplicate notifications
+                    pos["partial_exit"] = 1
+                    db.update_position(pos["id"], pos)
                 else:
                     exit_reason = "TP1"
                     exit_price = tp1
@@ -196,6 +199,9 @@ async def check_position(pos: dict, config: dict) -> Optional[dict]:
                 if EXIT_PARTIAL_TP1:
                     new_sl = entry
                     asyncio.create_task(send_telegram(f"🔴 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
+                    # Persist immediately to prevent duplicate notifications
+                    pos["partial_exit"] = 1
+                    db.update_position(pos["id"], pos)
                 else:
                     exit_reason = "TP1"
                     exit_price = tp1

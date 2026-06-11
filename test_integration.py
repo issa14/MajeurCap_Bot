@@ -146,7 +146,7 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         mock_bot_reload_config.return_value = mock_config
         
         # ─── SCAN 1: Ouverture ───
-        await bot_telegram.run_scan()
+        await bot_telegram.run_scan_cycle()
         self.assertTrue(self.mock_send_telegram.called)
         positions = trade_manager.load_positions()
         self.assertEqual(len(positions), 1)
@@ -165,7 +165,7 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         mock_tm_indicators.return_value = new_data
         mock_bot_analyze.return_value = {"BTC/USDT": {"df": new_data, "indicators_ok": True, "daily_trend": None}}
         
-        await bot_telegram.run_scan()
+        await bot_telegram.run_scan_cycle()
         
         updated_positions = trade_manager.load_positions()
         self.assertEqual(len(updated_positions), 1)
@@ -187,7 +187,7 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         
         # Disable signal detection for final scan in bot_telegram
         with patch("bot_telegram.scan_all", return_value=[]):
-            await bot_telegram.run_scan()
+            await bot_telegram.run_scan_cycle()
             
             final_positions = trade_manager.load_positions()
             self.assertEqual(len(final_positions), 0)

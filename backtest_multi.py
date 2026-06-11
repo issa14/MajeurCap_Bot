@@ -85,7 +85,10 @@ def compute_metrics(trades_df):
     
     # Sharpe annualisé (6 bougies 4h par jour * 365 jours = 2190 bougies/an)
     std = trades_df["pnl_pct"].std()
-    sharpe = (trades_df["pnl_pct"].mean() / std * np.sqrt(6 * 365)) if std > 0 else 0
+    
+    # Sharpe ratio calculation: mean / std_dev * sqrt(number of trades)
+    # Consistent approach for trade-based performance evaluation.
+    sharpe = (trades_df["pnl_pct"].mean() / std * np.sqrt(len(trades_df))) if std > 0 else 0
 
     return {
         "trades": trades, "winrate": winrate, "profit_factor": profit_factor,

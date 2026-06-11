@@ -7,6 +7,8 @@ import argparse
 import asyncio
 import sys
 import logging
+import signal
+from logging.handlers import RotatingFileHandler
 
 # Configuration du logging global
 logging.basicConfig(
@@ -14,10 +16,16 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("bot.log", encoding="utf-8"),
+        RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"),
     ],
 )
 log = logging.getLogger("DPSK")
+
+def graceful_shutdown(signum, frame):
+    log.info(f"Signal {signum} reçu. Arrêt gracieux...")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, graceful_shutdown)
 
 async def run_live():
     """Lance une itération du bot de trading."""
