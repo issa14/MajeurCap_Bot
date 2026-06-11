@@ -35,6 +35,7 @@ daily_trend_strict: true
 
 # Paramètres du Module 3 (détection de signal)
 signal:
+  cooldown_minutes: 240
   adx_required: true
   adx_threshold: 25
   fibo_proximity_pct: 1.0
