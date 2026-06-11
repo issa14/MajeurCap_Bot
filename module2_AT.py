@@ -230,6 +230,7 @@ def get_daily_trend_at_timestamp(symbol: str, timestamp, daily_data: dict, confi
 # ─── Batch ────────────────────────────────────────────────────────────────────
 def analyze_all(data: dict, config: dict, include_incomplete: bool = False, daily_data: Optional[dict] = None) -> dict:
     """Analyse toutes les paires avec injection de config."""
+    results = {}
 
     daily_filter_config = config.get("signal", {}).get("daily_filter_enabled", False)
     daily_strict = config.get("daily_trend_strict", config.get("signal", {}).get("daily_trend_strict", True))

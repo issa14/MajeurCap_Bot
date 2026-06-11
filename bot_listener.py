@@ -20,7 +20,7 @@ def _get_tg_config():
 
 # ─── Fonctions API Telegram ──────────────────────────────────────────────────
 async def send_message(text, session=None):
-    token, chat_id = _get_tg_config()
+    token, chat_id, _ = _get_tg_config()
     if not token or not chat_id:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
