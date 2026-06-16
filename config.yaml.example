@@ -51,19 +51,22 @@ signal:
   tp2_rr: 2.5
   zigzag_window: 3
 
-# --- SECRÉTS (À remplir dans votre config.yaml local) ---
+# --- SECRETS (À remplir dans votre config.yaml local) ---
 telegram:
   token: "VOTRE_BOT_TOKEN"
   chat_id: "VOTRE_CHAT_ID"
   allowed_user_id: "VOTRE_USER_ID"
 
+# ⚠️ MIGRATION : ancienne section "binance_testnet"
+# Clés API à générer sur : https://testnet.binancefutures.com
 binance_testnet:
-  api_key: "VOTRE_API_KEY"
-  api_secret: "VOTRE_API_SECRET"
-  testnet: true
+  api_key: "VOTRE_API_KEY_FUTURES_DEMO"
+  api_secret: "VOTRE_API_SECRET_FUTURES_DEMO"
+  demo: true          # ← remplace 'testnet: true'
 
 risk:
-  capital: 1000
+  capital: 1000       # Fallback — écrasé par le solde live au moment du trade
+  leverage: 5         # ← NOUVEAU — levier futures (1 = pas de levier)
   risk_per_trade: 1.0
   max_positions: 5
   max_exposure: 30.0
@@ -76,3 +79,4 @@ risk:
 
 execution:
   auto_execute: false
+  spot_only: false    # ← false = futures LONG + SHORT activés

@@ -21,12 +21,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("DPSK")
 
-def graceful_shutdown(signum, frame):
-    log.info(f"Signal {signum} reçu. Arrêt gracieux...")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, graceful_shutdown)
-
 async def run_live():
     """Lance une itération du bot de trading."""
     from bot_telegram import main as bot_main

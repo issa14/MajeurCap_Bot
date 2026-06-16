@@ -146,8 +146,14 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
     structure = detect_structure(df_z, config)
     threshold = min_conf if structure["pivots_count"] >= min_pivots else min_conf_no_str
 
+    spot_only = config.get("execution", {}).get("spot_only", False)
+
     best_signal = None
     for direction in ["long", "short"]:
+        # En mode spot_only, les SHORT sont impossibles (pas de vente à découvert)
+        if spot_only and direction == "short":
+            continue
+
         if daily_trend:
             if direction == "long" and daily_trend["trend"] != "bullish": continue
             if direction == "short" and daily_trend["trend"] != "bearish": continue

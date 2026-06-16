@@ -19,12 +19,18 @@ def get_current_exposure_pct(current_positions: list, capital: float) -> float:
                 used_capital += pos.get("quantity", 0) * entry
     return (used_capital / capital) * 100.0
 
-def calculate_position_size(signal: dict, config: dict, current_positions: list = None) -> float:
+def calculate_position_size(
+    signal: dict,
+    config: dict,
+    current_positions: list = None,
+    capital_override: float = None,   # ← capital live depuis l'exchange (prioritaire)
+) -> float:
     """
     Retourne la quantité à acheter/vendre (en unités de base) pour respecter le risque.
+    Si capital_override est fourni (solde live), il remplace la valeur statique de config.yaml.
     """
     risk_cfg = config.get("risk", {})
-    capital = risk_cfg.get("capital", 1000)
+    capital = capital_override if capital_override is not None else risk_cfg.get("capital", 1000)
     base_risk = risk_cfg.get("risk_per_trade", 1.0) / 100.0
     max_exposure_pct = risk_cfg.get("max_exposure", 30.0) / 100.0
 

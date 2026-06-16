@@ -19,12 +19,12 @@ def _get_tg_config():
     return token, chat_id, allowed_user_id
 
 # ─── Fonctions API Telegram ──────────────────────────────────────────────────
-async def send_message(text, session=None):
+async def send_message(text, parse_mode="Markdown", session=None):
     token, chat_id, _ = _get_tg_config()
     if not token or not chat_id:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     
     try:
         if session:
@@ -86,7 +86,9 @@ async def poll_updates():
                         log.info("📥 Commande reçue : Dashboard")
                         await send_message("⌛ Génération du dashboard...", session=session)
                         db_text = await get_dashboard_text()
-                        await send_message(db_text, session=session)
+                        # Envoi du dashboard en monospace
+                        formatted_text = f"```\n{db_text}\n```"
+                        await send_message(formatted_text, parse_mode="MarkdownV2", session=session)
                     
                     elif text.startswith("/start"):
                         await send_message("👋 Bonjour ! Envoyez `/db` pour voir l'état du bot.", session=session)

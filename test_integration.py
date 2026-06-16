@@ -34,7 +34,7 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         trade_manager.POSITIONS_FILE = self.positions_file
         
         # Mock Telegram to avoid network calls
-        self.telegram_patcher = patch("bot_telegram.send_telegram_message")
+        self.telegram_patcher = patch("bot_telegram.send_telegram")
         self.mock_send_telegram = self.telegram_patcher.start()
         
         self.tm_telegram_patcher = patch("trade_manager.send_telegram")
@@ -92,7 +92,7 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
     @patch("trade_manager.fetch_all_async")
     @patch("trade_manager.compute_indicators")
     @patch("bot_telegram.analyze_all")
-    @patch("execution.init_trading_exchange")
+    @patch("execution.get_exchange")
     @patch("bot_telegram.reload_config")
     @patch("bot_telegram.get_config")
     @patch("trade_manager.get_config")
@@ -113,6 +113,11 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         
         mock_exec_exchange.create_market_order.return_value = {"id": "order_123", "status": "closed"}
         mock_exec_exchange.create_order.return_value = {"id": "sl_123", "status": "open"}
+        
+        # Use MagicMock for synchronous methods of the AsyncMock exchange
+        mock_exec_exchange.amount_to_precision = unittest.mock.MagicMock(return_value="0.001")
+        mock_exec_exchange.price_to_precision = unittest.mock.MagicMock(return_value="100.0")
+        mock_exec_exchange.market = unittest.mock.MagicMock(return_value={"precision": {"amount": 8, "price": 8}})
         
         mock_config = {
             "watchlist": ["BTC/USDT"],

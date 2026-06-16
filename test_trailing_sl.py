@@ -72,8 +72,8 @@ class TestTrailingSL(unittest.IsolatedAsyncioTestCase):
             "direction": "LONG",
             "entry": 100.0,
             "sl": 80.0,
-            "tp1": 120.0,
-            "tp2": 1000.0, # Very high TP2 to ensure we hit trailing SL
+            "tp1": 300.0, # Increased to avoid hitting TP1 before Trailing SL
+            "tp2": 1000.0, 
             "quantity": 0.1,
             "entry_date": "2022-12-31T20:00:00Z",
             "status": "active",

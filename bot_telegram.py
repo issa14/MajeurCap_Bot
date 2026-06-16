@@ -19,6 +19,7 @@ from trade_manager import manage_positions, open_position
 from config_loader import get_config, reload_config
 from database import db
 from logging.handlers import RotatingFileHandler
+from telegram_utils import send_telegram
 
 # ─── Déduplication des signaux ───────────────────────────────────────────────
 # Mémorise le dernier envoi Telegram par symbole pour éviter le spam
@@ -53,29 +54,6 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("telegram_bot")
-
-# ─── Fonctions Telegram Asynchrones ──────────────────────────────────────
-async def send_telegram_message(text: str, disable_notification: bool = False):
-    config = get_config()
-    tg_cfg = config.get("telegram", {})
-    token = tg_cfg.get("token", "")
-    chat_id = tg_cfg.get("chat_id", "")
-    if not token or not chat_id:
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_notification": disable_notification
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=10) as resp:
-                if resp.status != 200:
-                    log.error(f"Erreur Telegram : {await resp.text()}")
-    except Exception as e:
-        log.error(f"Échec envoi Telegram : {e}")
 
 def format_signal(sig: dict) -> str:
     direction_emoji = "🟢 LONG" if sig["direction"] == "LONG" else "🔴 SHORT"
@@ -125,7 +103,7 @@ async def run_scan_cycle():
     try:
         data = await fetch_all_async(exchange, use_cache=True)
         if not data:
-            asyncio.create_task(send_telegram_message("⚠️ Aucune donnée récupérée."))
+            await send_telegram("⚠️ Aucune donnée récupérée.", config)
             return
 
         daily_data = {}
@@ -146,50 +124,43 @@ async def run_scan_cycle():
         for sig in signals:
             pair = sig["symbol"]
 
-            # ── Cooldown : on ignore les signaux déjà notifiés récemment ──
             cooldown_min = config.get("signal", {}).get("cooldown_minutes", 240)
             last_sent = _signal_sent_at.get(pair)
-            if last_sent and (now - last_sent) < timedelta(minutes=cooldown_min):
-                elapsed = int((now - last_sent).total_seconds() // 60)
-                log.info(f"{pair} — signal ignoré (cooldown actif, dernier envoi il y a {elapsed} min)")
-                continue
+            tg_on_cooldown = last_sent and (now - last_sent) < timedelta(minutes=cooldown_min)
 
-            # ── On vérifie d'abord si la position peut être ouverte ──
+            # Le trade est TOUJOURS tenté, indépendamment du cooldown Telegram
             result = await open_position(sig, config)
 
             if result["success"]:
                 # Nouvelle position ouverte : on notifie et on mémorise
                 _signal_sent_at[pair] = now
                 db.update_signal_cooldown(pair, now)
-                msg_detail = format_signal(sig)
-                await send_telegram_message(msg_detail)
-                quantity = result.get("quantity", 0)
-                msg_exec = f"✅ <b>Ordre exécuté</b> pour {pair}\nQuantité : <code>{quantity:.6f}</code>\nEntrée : <code>{sig['entry']}</code>"
-                await send_telegram_message(msg_exec)
+                if not tg_on_cooldown:          # ← Telegram throttlé, pas le trade
+                    msg_detail = format_signal(sig)
+                    await send_telegram(msg_detail, config)
+                    quantity = result.get("quantity", 0)
+                    msg_exec = f"✅ <b>Ordre exécuté</b> pour {pair}\nQuantité : <code>{quantity:.6f}</code>\nEntrée : <code>{sig['entry']}</code>"
+                    await send_telegram(msg_exec, config)
+
+            elif result.get("reason") == "already_open":
+                log.info(f"{pair} — signal ignoré (position déjà ouverte)")
 
             else:
-                reason = result.get("reason", "Inconnue")
-
-                if reason == "already_open":
-                    # Position déjà ouverte : silence total, pas de cooldown à poser
-                    log.info(f"{pair} — signal ignoré (position déjà ouverte)")
-
-                else:
-                    # Rejet légitime (risk, exposition, ADX…) : on notifie une fois
+                # Rejet légitime : notifier une fois (si pas en cooldown)
+                if not tg_on_cooldown:
                     _signal_sent_at[pair] = now
                     db.update_signal_cooldown(pair, now)
-                    msg_detail = format_signal(sig)
-                    await send_telegram_message(msg_detail)
-
+                    await send_telegram(format_signal(sig), config)
+                    
+                    reason = result.get("reason", "Inconnue")
                     display_reason = reason
                     if reason == "ADX trop faible":
                         display_reason = f"ADX trop faible ({sig.get('adx', 0):.1f} < {config.get('signal', {}).get('adx_threshold')})"
-
+                    
                     msg_reject = f"🚫 <b>Ordre non passé</b> pour {pair}\nRaison : {display_reason}"
                     if "current" in result:
                         msg_reject += f" ({result['current']} / {result['limit']})"
-
-                    await send_telegram_message(msg_reject)
+                    await send_telegram(msg_reject, config)
 
             await asyncio.sleep(0.5)
 

@@ -12,9 +12,13 @@ class DatabaseManager:
         self.db_path = db_path
         self._init_db()
 
+    def _connect(self):
+        """Helper pour la connexion SQLite."""
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
     def _init_db(self):
         """Initialise la table positions si elle n'existe pas."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS positions (
@@ -33,9 +37,17 @@ class DatabaseManager:
                     exit_price REAL,
                     exit_date TEXT,
                     exit_reason TEXT,
-                    pnl_pct REAL
+                    pnl_pct REAL,
+                    pnl_usd REAL
                 )
             """)
+            
+            # Migration : Ajouter pnl_usd si elle n'existe pas (si la table existait déjà)
+            cursor.execute("PRAGMA table_info(positions)")
+            columns = [info[1] for info in cursor.fetchall()]
+            if 'pnl_usd' not in columns:
+                cursor.execute("ALTER TABLE positions ADD COLUMN pnl_usd REAL")
+
             # Index unique pour éviter les doublons sur les positions actives
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_symbol 
@@ -53,7 +65,7 @@ class DatabaseManager:
 
     def get_signal_cooldowns(self) -> dict:
         """Charge tous les cooldowns depuis la DB."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT symbol, last_sent_at FROM signal_cooldowns")
             rows = cursor.fetchall()
@@ -69,7 +81,7 @@ class DatabaseManager:
 
     def update_signal_cooldown(self, symbol: str, last_sent_at: datetime):
         """Met à jour ou insère un cooldown pour un symbole."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO signal_cooldowns (symbol, last_sent_at)
@@ -80,7 +92,7 @@ class DatabaseManager:
 
     def insert_position(self, pos_data: dict) -> int:
         """Insère une nouvelle position et retourne son ID."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             query = """
                 INSERT INTO positions (
@@ -124,7 +136,7 @@ class DatabaseManager:
         if not clean_updates:
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             set_clause = [f"{col} = ?" for col in clean_updates.keys()]
             values = list(clean_updates.values())
@@ -136,7 +148,7 @@ class DatabaseManager:
 
     def get_active_positions(self) -> list:
         """Retourne la liste des positions non clôturées."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM positions WHERE status != 'closed'")
@@ -145,29 +157,30 @@ class DatabaseManager:
 
     def get_all_positions(self) -> list:
         """Retourne absolument toutes les positions (historique inclus)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM positions")
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_realized_pnl_today(self) -> float:
-        """Calcule la somme des PnL réalisés (%) de la journée."""
-        with sqlite3.connect(self.db_path) as conn:
+    def get_realized_pnl_today(self, initial_capital: float = 1000.0) -> float:
+        """Calcule la somme des PnL réalisés (%) de la journée en pondérant par le capital."""
+        with self._connect() as conn:
             cursor = conn.cursor()
-            # Utilisation de UTC pour la cohérence avec Binance
             today = datetime.now(timezone.utc).date().isoformat()
             
-            # Somme des PnL pour les trades fermés aujourd'hui
+            # Somme des PnL USD pour les trades fermés aujourd'hui
             cursor.execute("""
-                SELECT SUM(pnl_pct) FROM positions 
+                SELECT SUM(pnl_usd) FROM positions 
                 WHERE status = 'closed' 
                 AND date(exit_date) = ?
             """, (today,))
             result = cursor.fetchone()[0]
             
-            # Le PnL est déjà en pourcentage, on retourne la somme des %
-            return result if result is not None else 0.0
+            realized_pnl_usd = result if result is not None else 0.0
+            
+            # Conversion en pourcentage basé sur le capital initial
+            return (realized_pnl_usd / initial_capital) * 100 if initial_capital != 0 else 0.0
 
 # Instance globale pour simplicité (ou à injecter)
 db = DatabaseManager()

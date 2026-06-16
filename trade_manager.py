@@ -1,5 +1,5 @@
 """
-Trade Manager v2.0 (avec Risk Manager + Exécution Testnet)
+Trade Manager v2.0 (avec Risk Manager + Exécution Futures Demo)
 """
 
 import json
@@ -8,6 +8,7 @@ import asyncio
 import sys
 import pandas as pd
 import aiohttp
+import ccxt.async_support as ccxt_async
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -21,37 +22,13 @@ from risk_manager import (
     get_active_positions_count,
     get_current_exposure_pct
 )
-from execution import execute_signal, update_sl_order
+from execution import execute_signal, update_sl_order, init_trading_exchange
 from config_loader import get_config
 from database import db
+from telegram_utils import send_telegram
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 log = logging.getLogger("trade_manager")
-
-# ─── Variables d'état ─────────────────────────────────────────────────────────
-_circuit_breaker_alerted = False
-
-# ─── Telegram Helper ──────────────────────────────────────────────────────────
-async def send_telegram(text: str, config: dict, disable_notification: bool = False):
-    tg_cfg = config.get("telegram", {})
-    token = tg_cfg.get("token", "")
-    chat_id = tg_cfg.get("chat_id", "")
-    if not token or not chat_id:
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_notification": disable_notification
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=10) as resp:
-                if resp.status != 200:
-                    log.error(f"Erreur Telegram : {await resp.text()}")
-    except Exception as e:
-        log.error(f"Échec envoi Telegram : {e}")
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 POSITIONS_FILE = Path("positions.json")
@@ -72,9 +49,7 @@ def migrate_json_to_sqlite():
         active_in_db = [p["symbol"] for p in db.get_active_positions()]
         
         for pos in positions:
-            # On n'importe que si pas déjà présent et actif (pour éviter les doublons lors de relances)
             if pos["symbol"] not in active_in_db:
-                # Adapter le format JSON au format DB
                 db_pos = {
                     "symbol": pos["symbol"],
                     "direction": pos["direction"],
@@ -90,7 +65,6 @@ def migrate_json_to_sqlite():
                 }
                 db.insert_position(db_pos)
         
-        # Renommer le fichier après migration réussie
         POSITIONS_FILE.rename(POSITIONS_FILE.with_suffix(".json.bak"))
         log.info("Migration terminée avec succès. positions.json renommé en .bak")
     except Exception as e:
@@ -99,7 +73,6 @@ def migrate_json_to_sqlite():
 # ─── Gestion des positions (SQLite) ──────────────────────────────────────────
 def load_positions() -> list:
     """Charge les positions actives depuis SQLite."""
-    # On tente une migration au premier chargement si le fichier existe
     if POSITIONS_FILE.exists():
         migrate_json_to_sqlite()
     positions = db.get_active_positions()
@@ -110,13 +83,8 @@ def load_positions() -> list:
         pos["tp2"] = pos.get("tp2_price") if "tp2_price" in pos else pos.get("tp2")
     return positions
 
-def save_positions(positions: list):
-    """Obsolète avec SQLite - Les mises à jour sont faites en temps réel."""
-    pass
-
 # ─── Vérification d'une position (break‑even, TP/SL) ─────────────────────────
 async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dict]:
-    # Normalisation des clés pour compatibilité JSON/DB
     symbol = pos["symbol"]
     entry = pos.get("entry") or pos.get("entry_price")
     direction = pos["direction"]
@@ -127,19 +95,16 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
     
     EXIT_PARTIAL_TP1 = config.get("risk", {}).get("partial_exit_tp1", True)
     
-    # On réinjecte les valeurs normalisées dans le dict pour la suite de la fonction
     pos["entry_price"] = pos["entry"] = entry
     pos["sl_price"] = pos["sl"] = sl
     pos["tp1_price"] = pos["tp1"] = tp1
     pos["tp2_price"] = pos["tp2"] = tp2
 
-    # Config Trailing SL
     risk_cfg = config.get("risk", {})
     trailing_enabled = risk_cfg.get("trailing_sl_enabled", False)
     activation_tp = risk_cfg.get("trailing_sl_activation_tp", 1)
     trailing_atr_mult = risk_cfg.get("trailing_sl_atr_mult", 2.0)
 
-    # Si pas d'exchange fourni, on en ouvre un temporairement
     local_exchange = None
     if exchange is None:
         local_exchange = await init_exchange_async()
@@ -185,7 +150,6 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
                 if EXIT_PARTIAL_TP1:
                     new_sl = entry
                     asyncio.create_task(send_telegram(f"🟢 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
-                    # Persist immediately to prevent duplicate notifications
                     pos["sl_price"] = pos["sl"] = new_sl
                     pos["partial_exit"] = 1
                     clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
@@ -214,7 +178,6 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
                 if EXIT_PARTIAL_TP1:
                     new_sl = entry
                     asyncio.create_task(send_telegram(f"🔴 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
-                    # Persist immediately to prevent duplicate notifications
                     pos["sl_price"] = pos["sl"] = new_sl
                     pos["partial_exit"] = 1
                     clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
@@ -263,14 +226,18 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
         pos["exit_reason"] = exit_reason
         pos["exit_price"] = exit_price
         pos["exit_date"] = str(after_entry.iloc[-1]["timestamp"])
+        
+        pnl_usd = (exit_price - entry) * pos["quantity"] if direction == "LONG" else (entry - exit_price) * pos["quantity"]
         pnl_pct = ((exit_price - entry) / entry * 100) if direction == "LONG" else ((entry - exit_price) / entry * 100)
+        
+        pos["pnl_usd"] = round(pnl_usd, 4)
         pos["pnl_pct"] = round(pnl_pct, 2)
+        
         emoji = "✅" if pnl_pct > 0 else "❌"
         asyncio.create_task(send_telegram(f"{emoji} {symbol} {direction} clôturé ({exit_reason})\nPrix sortie : {exit_price}\nPnL : {pnl_pct:+.2f}%", config))
     elif partial_exit_done and EXIT_PARTIAL_TP1:
         pos["status"] = "tp1_hit"
 
-    # Persistance en base de données
     clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
     db.update_position(pos["id"], clean_updates)
     return pos
@@ -287,7 +254,6 @@ async def manage_positions():
         for pos in positions:
             if pos.get("status") == "closed":
                 continue
-            # On passe l'exchange partagé pour éviter d'ouvrir une connexion par position
             await check_position(pos, config, exchange=exchange)
     finally:
         await exchange.close()
@@ -301,7 +267,6 @@ async def check_circuit_breaker(config: dict) -> bool:
     risk_cfg = config.get("risk", {})
     daily_loss_limit = risk_cfg.get("daily_loss_limit", -5.0)
 
-    # Récupère le PnL réalisé en % de la journée
     realized_pnl_pct = db.get_realized_pnl_today()
 
     if realized_pnl_pct <= daily_loss_limit:
@@ -312,57 +277,64 @@ async def check_circuit_breaker(config: dict) -> bool:
             _circuit_breaker_alerted = True
         return True
 
-    # Reset si le PnL remonte au-dessus du seuil (nouvelle journée par exemple)
     _circuit_breaker_alerted = False
     return False
+
 async def open_position(signal: dict, config: dict) -> dict:
     positions = load_positions()
     symbol = signal["symbol"]
 
-    # 0. Vérifier Circuit Breaker
     if await check_circuit_breaker(config):
         return {"success": False, "reason": "Circuit breaker déclenché"}
 
-    # 1. Vérifier doublon
     for p in positions:
         if p["symbol"] == symbol and p.get("status") != "closed":
             log.warning(f"Position déjà ouverte sur {symbol}")
             return {"success": False, "reason": "already_open"}
 
-    # 2. Vérifier nombre de positions
     if not can_open_position(positions, config):
         max_pos = config.get("risk", {}).get("max_positions", 5)
         return {
-            "success": False, 
-            "reason": "Nombre max de positions", 
-            "current": get_active_positions_count(positions), 
+            "success": False,
+            "reason": "Nombre max de positions",
+            "current": get_active_positions_count(positions),
             "limit": max_pos
         }
 
-    # 3. Vérifier l'exposition
     risk_cfg = config.get("risk", {})
-    capital = risk_cfg.get("capital", 1000)
+    
+    # Capital live depuis l'exchange
+    live_capital = risk_cfg.get("capital", 1000)
+    try:
+        exch_tmp = await init_trading_exchange()
+        try:
+            bal = await exch_tmp.fetch_balance()
+            live_capital = bal["free"].get("USDT", live_capital)
+            log.info(f"Capital live récupéré : {live_capital:.2f} USDT")
+        finally:
+            await exch_tmp.close()
+    except Exception as e:
+        log.warning(f"Impossible de récupérer le solde live, fallback config ({e})")
+
     max_exposure_pct = risk_cfg.get("max_exposure", 30.0)
-    current_exp = get_current_exposure_pct(positions, capital)
+    current_exp = get_current_exposure_pct(positions, live_capital)
     if current_exp >= max_exposure_pct:
         return {
-            "success": False, 
-            "reason": "Exposition maximale atteinte", 
-            "current": f"{current_exp:.1f}%", 
+            "success": False,
+            "reason": "Exposition maximale atteinte",
+            "current": f"{current_exp:.1f}%",
             "limit": f"{max_exposure_pct:.1f}%"
         }
 
-    quantity = calculate_position_size(signal, config, positions)
+    quantity = calculate_position_size(signal, config, positions, capital_override=live_capital)
     if quantity <= 0:
         return {"success": False, "reason": "Taille de position nulle"}
 
-    # Exécution automatique si activée
     auto_exec = config.get("execution", {}).get("auto_execute", False)
     sl_order_id = None
     if auto_exec:
         result = await execute_signal(signal, quantity)
         if not result["success"]:
-            # Si l'ordre d'entrée a réussi mais pas le stop, on alerte et on continue
             if "entry_order" in result:
                 asyncio.create_task(send_telegram(f"⚠️ {symbol} — Stop-loss non placé ! Entrée exécutée, à surveiller manuellement.", config))
             else:

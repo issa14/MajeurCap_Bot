@@ -94,11 +94,15 @@ def _add_is_closed(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
 # ─── Initialisation exchange asynchrone ──────────────────────────────────────
 async def init_exchange_async() -> ccxt_async.binance:
+    """
+    Exchange public (sans auth) pour la récupération des données OHLCV.
+    defaultType: 'future' → prix des perpetuals USDⓈ-M (cohérent avec l'exécution futures).
+    """
     exchange = ccxt_async.binance({
         "enableRateLimit": True,
-        "options": {"defaultType": "spot"},
+        "options": {"defaultType": "future"},  # ← futures perpetuals pour les données
     })
-    log.info("Exchange Binance initialisé (mode public, spot, async)")
+    log.info("Exchange Binance initialisé (mode public, futures, async)")
     return exchange
 
 # ─── Récupération OHLCV asynchrone ───────────────────────────────────────────
