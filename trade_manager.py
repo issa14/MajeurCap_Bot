@@ -83,6 +83,36 @@ def load_positions() -> list:
         pos["tp2"] = pos.get("tp2_price") if "tp2_price" in pos else pos.get("tp2")
     return positions
 
+# ─── Annulation des ordres exchange lors d'une clôture ───────────────────────
+async def cancel_exchange_orders(symbol: str, pos: dict) -> None:
+    """
+    Annule tous les ordres ouverts liés à une position sur l'exchange (SL, TP1, TP2).
+    Appelé systématiquement à la clôture pour éviter les ordres orphelins.
+    Chaque annulation est indépendante — une erreur n'en bloque pas une autre.
+    """
+    auto_exec = get_config().get("execution", {}).get("auto_execute", False)
+    if not auto_exec:
+        return
+
+    order_ids = {
+        "SL":  pos.get("sl_order_id"),
+        "TP1": pos.get("tp1_order_id"),
+        "TP2": pos.get("tp2_order_id"),
+    }
+
+    exchange = await init_trading_exchange()
+    try:
+        for label, order_id in order_ids.items():
+            if not order_id:
+                continue
+            try:
+                await exchange.cancel_order(order_id, symbol)
+                log.info(f"{symbol} — ordre {label} ({order_id}) annulé sur l'exchange")
+            except Exception as e:
+                log.warning(f"{symbol} — impossible d'annuler ordre {label} ({order_id}): {e}")
+    finally:
+        await exchange.close()
+
 # ─── Vérification d'une position (break‑even, TP/SL) ─────────────────────────
 async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dict]:
     symbol = pos["symbol"]
@@ -222,6 +252,9 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
     pos["partial_exit"] = 1 if partial_exit_done else 0
 
     if exit_reason:
+        # Annuler tous les ordres restants sur l'exchange (évite les ordres orphelins)
+        asyncio.create_task(cancel_exchange_orders(symbol, pos))
+
         pos["status"] = "closed"
         pos["exit_reason"] = exit_reason
         pos["exit_price"] = exit_price

@@ -52,6 +52,7 @@ def calculate_position_size(
         risk_per_trade_pct = base_risk
     sl_pct = signal.get("sl_pct", 1.0) / 100.0   # ex: 3.52% -> 0.0352
     entry_price = signal["entry"]
+    leverage = risk_cfg.get("leverage", 1)
 
     # Capital encore disponible (en tenant compte des positions déjà ouvertes)
     used_capital = 0.0
@@ -69,10 +70,13 @@ def calculate_position_size(
     # Risque monétaire maximum sur ce trade
     risk_amount = capital * risk_per_trade_pct   # ex: 1000 * 0.01 = 10 USDT
 
-    # Taille de position = risque / (distance SL en %)
+    # Taille de position futures = risque / (distance SL en % × prix × levier)
+    # Le levier amplifie l'exposition : avec levier 5, on contrôle 5× la valeur
+    # donc on a besoin de 5× moins d'unités pour le même risque nominal
     if sl_pct == 0:
         return 0.0
-    position_size = risk_amount / (sl_pct * entry_price)   # en unités (ex: BTC)
+    position_size = risk_amount / (sl_pct * entry_price * leverage)   # en unités (ex: BTC)
+    log.info(f"Position sizing: risk={risk_amount:.2f} USDT, sl={sl_pct*100:.2f}%, leverage={leverage}x → qty={position_size:.6f}")
 
     # Vérifier l'exposition maximale (si dépassée, réduire)
     max_exposure_amount = capital * max_exposure_pct
