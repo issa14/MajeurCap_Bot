@@ -95,8 +95,8 @@ async def run_scan_cycle():
     log.info("Début du scan...")
     config = reload_config_if_changed()
 
-    # 1. Gestion des positions existantes
-    await manage_positions()
+    # manage_positions() est appelé directement dans la boucle principale (main)
+    # pour s'exécuter à chaque cycle de 60s indépendamment du scan signaux
 
     # 2. Récupération des données
     exchange = await init_exchange_async()
@@ -172,14 +172,36 @@ async def main():
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
-    
+
+    POSITION_CHECK_INTERVAL = 60      # secondes — vérification des positions ouvertes
+    SIGNAL_SCAN_INTERVAL    = 900     # secondes — scan signaux (toutes les 15 min)
+
+    last_signal_scan = 0.0            # force un scan immédiat au démarrage
+
     while not stop_event.is_set():
-        await run_scan_cycle()
-        # Scan toutes les 60s
-        for _ in range(60):
-            if stop_event.is_set(): break
+        now = asyncio.get_event_loop().time()
+
+        # 1. Gestion des positions — toujours (60s)
+        try:
+            config = reload_config_if_changed()
+            await manage_positions()
+        except Exception as e:
+            log.error(f"Erreur manage_positions : {e}", exc_info=True)
+
+        # 2. Scan signaux — seulement toutes les 15 min
+        if (now - last_signal_scan) >= SIGNAL_SCAN_INTERVAL:
+            try:
+                await run_scan_cycle()
+                last_signal_scan = asyncio.get_event_loop().time()
+            except Exception as e:
+                log.error(f"Erreur run_scan_cycle : {e}", exc_info=True)
+
+        # Attendre 60s (interruptible par stop_event)
+        for _ in range(POSITION_CHECK_INTERVAL):
+            if stop_event.is_set():
+                break
             await asyncio.sleep(1)
-    
+
     log.info("Signal d'arrêt reçu — arrêt propre du bot après le cycle en cours.")
 
 if __name__ == "__main__":
