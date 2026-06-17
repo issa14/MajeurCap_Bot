@@ -73,16 +73,22 @@ def detect_structure(df: pd.DataFrame, config: dict) -> dict:
 def check_confluences(df, fibo, structure, direction, config: dict) -> list:
     last, close = df.iloc[-1], df.iloc[-1]["close"]
     sig_cfg = config.get("signal", {})
-    fibo_prox = sig_cfg.get("fibo_proximity_pct", 1.0)
-    rsi_long = tuple(sig_cfg.get("rsi_long_zone", [30, 55]))
-    rsi_short = tuple(sig_cfg.get("rsi_short_zone", [45, 70]))
+    rsi_long = tuple(sig_cfg.get("rsi_long_zone", [30, 45]))
+    rsi_short = tuple(sig_cfg.get("rsi_short_zone", [55, 70]))
     kc_enabled = sig_cfg.get("kc_filter", True)
+
+    # Fibo proximity dynamique basé sur ATR% (évite faux positifs sur BTC/ETH)
+    atr_pct = last["atr"] / close * 100
+    fibo_prox_max = sig_cfg.get("fibo_proximity_pct_max", 1.0)
+    fibo_prox = min(atr_pct * sig_cfg.get("fibo_proximity_atr_mult", 0.5), fibo_prox_max)
 
     c = []
     if direction == "long":
         if structure.get("bos") == "bullish": c.append("BOS haussier")
+        if structure.get("choch") == "bullish": c.append("CHoCH haussier (retournement)")
     else:
         if structure.get("bos") == "bearish": c.append("BOS baissier")
+        if structure.get("choch") == "bearish": c.append("CHoCH baissier (retournement)")
 
     if fibo and "levels" in fibo:
         for k, lp in fibo["levels"].items():
@@ -149,6 +155,7 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
     spot_only = config.get("execution", {}).get("spot_only", False)
 
     best_signal = None
+    best_confluence_count = 0
     for direction in ["long", "short"]:
         # En mode spot_only, les SHORT sont impossibles (pas de vente à découvert)
         if spot_only and direction == "short":
@@ -159,12 +166,12 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
             if direction == "short" and daily_trend["trend"] != "bearish": continue
 
         confluences = check_confluences(df, fibo, structure, direction, config)
-        if len(confluences) >= threshold:
+        if len(confluences) >= threshold and len(confluences) > best_confluence_count:
             levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
             best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences, 
                            "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"], 
                            "adx": df.iloc[-1].get("adx", 0), **levels}
-            break
+            best_confluence_count = len(confluences)
 
     return best_signal
 
