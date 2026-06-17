@@ -71,47 +71,51 @@ async def main():
     logging.basicConfig(level=logging.WARNING)
     base_config = get_config()
     
+    # Scénarios v2 — test axes : daily filter, min_confluences, KC filter
+    # Format : (name, adx_required, daily_filter, kc_filter, sl_mult, trailing, min_conf)
     scenarios = [
-        ("adx_only",    True,  False, False, 1.5, False),
-        ("adx_sl2.0",   True,  False, False, 2.0, False),
-        ("adx_trailing", True,  False, False, 1.5, True),
-        ("adx_opti",    True,  False, False, 2.0, True),
+        ("base",         True, False, False, 2.0, False, 3),
+        ("daily",        True, True,  False, 2.0, False, 3),
+        ("conf4",        True, False, False, 2.0, False, 4),
+        ("kc",           True, False, True,  2.0, False, 3),
+        ("daily+conf4",  True, True,  False, 2.0, False, 4),
+        ("daily+kc",     True, True,  True,  2.0, False, 3),
+        ("conf4+kc",     True, False, True,  2.0, False, 4),
+        ("full",         True, True,  True,  2.0, False, 4),
     ]
-    
-    confluences_to_test = [3]
+
     watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
-    
+
     results = []
 
-    print(f"{'Scénario':<15} | {'SL':<4} | {'Trail':<5} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
-    print("-" * 90)
+    print(f"{'Scénario':<15} | {'Conf':<4} | {'Daily':<5} | {'KC':<5} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
+    print("-" * 100)
 
-    for name, adx, daily, kc, sl_mult, trailing in scenarios:
-        for conf in confluences_to_test:
-            params = {
-                "adx_required": adx,
-                "daily_filter_enabled": daily,
-                "kc_filter": kc,
-                "min_confluences": conf,
-                "zigzag_window": 3,
-                "min_swing_diff_pct": 0.5,
-                "daily_trend_strict": False,
-                "sl_atr_mult": sl_mult,
-                "trailing_sl_enabled": trailing
-            }
-            
-            trades_df = await run_single_backtest(params, symbols=watchlist)
-            m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
-            
-            res_entry = {
-                "scenario": name,
-                "min_confluences": conf,
-                **m,
-                "params": params
-            }
-            results.append(res_entry)
-            
-            print(f"{name:<15} | {sl_mult:<4} | {str(trailing):<5} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
+    for name, adx, daily, kc, sl_mult, trailing, min_conf in scenarios:
+        params = {
+            "adx_required":        adx,
+            "daily_filter_enabled": daily,
+            "kc_filter":           kc,
+            "min_confluences":     min_conf,
+            "zigzag_window":       3,
+            "min_swing_diff_pct":  0.5,
+            "daily_trend_strict":  False,
+            "sl_atr_mult":         sl_mult,
+            "trailing_sl_enabled": trailing,
+        }
+
+        trades_df = await run_single_backtest(params, symbols=watchlist)
+        m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
+
+        res_entry = {
+            "scenario":        name,
+            "min_confluences": min_conf,
+            **m,
+            "params":          params,
+        }
+        results.append(res_entry)
+
+        print(f"{name:<15} | {min_conf:<4} | {str(daily):<5} | {str(kc):<5} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
 
 if __name__ == "__main__":
     asyncio.run(main())
