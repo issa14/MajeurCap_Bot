@@ -14,13 +14,13 @@ exchange = ccxt.binance({
     'secret': binance_cfg.get('api_secret'),
     'enableRateLimit': True,
     'options': {
-        'defaultType': 'spot',
+        'defaultType': 'future',
         'adjustForTimeDifference': True,
     }
 })
 
-# Activation propre du mode Testnet (Sandbox)
-exchange.set_sandbox_mode(True)
+# Activation propre du mode Demo Trading
+exchange.enable_demo_trading(True)
 
 try:
     # Récupération du solde

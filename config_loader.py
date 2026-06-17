@@ -4,7 +4,8 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path("config.yaml")
+# Utilisation d'un chemin absolu par rapport au fichier config_loader.py
+CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 def load_config() -> dict:
     """Charge la configuration depuis le fichier YAML."""

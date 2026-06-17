@@ -15,16 +15,25 @@ log = logging.getLogger("dashboard")
 # ─── Exchange ─────────────────────────────────────────────────────────────────
 async def get_exchange(config: dict) -> ccxt_async.binance:
     binance_cfg = config.get("binance_testnet", {})
-    exchange = ccxt_async.binance({
+    is_demo = binance_cfg.get("demo", True)
+    
+    config_dict = {
         "apiKey":          binance_cfg.get("api_key", ""),
         "secret":          binance_cfg.get("api_secret", ""),
         "enableRateLimit": True,
         "options": {
-            "defaultType": "future",   # ← futures pour dashboard cohérent avec l'exécution
+            "defaultType": "future",
         },
-    })
-    if binance_cfg.get("demo", True):
-        exchange.enable_demo_trading(True)   # ← remplace set_sandbox_mode
+    }
+    
+    if is_demo:
+        config_dict["options"]["enableDemoTrading"] = True
+        
+    exchange = ccxt_async.binance(config_dict)
+    
+    if is_demo:
+        exchange.enable_demo_trading(True)
+        
     return exchange
 
 # ─── Métriques ────────────────────────────────────────────────────────────────
@@ -52,18 +61,12 @@ def compute_unrealized_pnl(active_positions: dict, tickers: dict) -> float:
 def compute_account_equity(balance: dict, tickers: dict) -> tuple[float, float]:
     """
     Retourne (usdt_cash, total_equity_usd).
-    BUG FIX : utilise balance['free'] pour le cash disponible (pas 'total' qui inclut
-    les marges bloquées par les ordres ouverts).
+    En Futures, balance['total']['USDT'] est l'Equity (Margin Balance).
+    balance['free']['USDT'] est le capital disponible pour ouvrir de nouvelles positions.
     """
-    usdt_cash   = balance["free"].get("USDT", 0.0)    # ← free, pas total
-    assets_value = 0.0
-    for asset, amount in balance["total"].items():     # total OK pour les actifs détenus
-        if asset == "USDT" or amount <= 0:
-            continue
-        price = tickers.get(f"{asset}/USDT", {}).get("last", 0)
-        if price > 0:
-            assets_value += amount * price
-    return usdt_cash, usdt_cash + assets_value
+    usdt_free   = balance["free"].get("USDT", 0.0)
+    usdt_equity = balance["total"].get("USDT", 0.0)
+    return usdt_free, usdt_equity
 
 def compute_exposure(active_positions: dict, tickers: dict, equity: float) -> tuple[float, float]:
     """Retourne (exposure_usd, exposure_pct)."""

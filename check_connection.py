@@ -17,7 +17,7 @@ async def run_check():
     binance_cfg = config.get("binance_testnet", {})
     api_key = binance_cfg.get("api_key", "")
     api_secret = binance_cfg.get("api_secret", "")
-    is_testnet = binance_cfg.get("testnet", True)
+    is_testnet = binance_cfg.get("demo", True)
 
     if not api_key or not api_secret:
         log.error("API Key ou API Secret manquante dans le fichier config.yaml (section binance_testnet).")
@@ -29,13 +29,13 @@ async def run_check():
         "secret": api_secret,
         "enableRateLimit": True,
         "options": {
-            "defaultType": "spot",
+            "defaultType": "future",
         },
     })
     
     if is_testnet:
-        exchange.set_sandbox_mode(True)
-        log.info("--- TESTNET BINANCE ACTIVÉ ---")
+        exchange.enable_demo_trading(True)
+        log.info("--- DEMO TRADING BINANCE (FUTURES) ACTIVÉ ---")
     else:
         log.info("--- MAINNET BINANCE ACTIVÉ (Prudence !) ---")
 

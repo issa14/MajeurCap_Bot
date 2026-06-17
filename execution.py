@@ -17,27 +17,33 @@ def _get_binance_params():
     return {
         "api_key":    binance_cfg.get("api_key", ""),
         "api_secret": binance_cfg.get("api_secret", ""),
-        "demo":       binance_cfg.get("testnet", True),
+        "demo":       binance_cfg.get("demo", True),
     }
 
 
 async def init_trading_exchange() -> ccxt_async.binance:
     """
-    Initialise l'exchange pour le trading futures en mode demo Binance.
-    - defaultType: 'future'  → USDⓈ-M Perpetuals (BTCUSDT, ETHUSDT, …)
-    - enable_demo_trading()  → redirige vers demo-fapi.binance.com (remplace l'ancien sandbox)
+    Initialise l'exchange pour le trading futures en mode DEMO Binance.
     """
     params = _get_binance_params()
-    exchange = ccxt_async.binance({
+    config_dict = {
         "apiKey":          params["api_key"],
         "secret":          params["api_secret"],
         "enableRateLimit": True,
         "options": {
-            "defaultType": "future",   # ← USDⓈ-M Perpetuals
+            "defaultType": "future",
         },
-    })
+    }
+    
     if params["demo"]:
-        exchange.enable_demo_trading(True)   # ← remplace set_sandbox_mode(True)
+        # Pour certains environnements, définir enableDemoTrading dans les options est plus robuste
+        config_dict["options"]["enableDemoTrading"] = True
+        
+    exchange = ccxt_async.binance(config_dict)
+    
+    if params["demo"]:
+        exchange.enable_demo_trading(True)
+        
     log.info("Exchange Binance Futures (Demo Trading) initialisé")
     return exchange
 
