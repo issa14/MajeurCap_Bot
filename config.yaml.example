@@ -47,7 +47,7 @@ signal:
   min_swing_diff_pct: 0.5
   rsi_long_zone: [30, 45]
   rsi_short_zone: [55, 70]
-  sl_atr_mult: 1.5
+  sl_atr_mult: 2.0
   tp1_rr: 1.5
   tp2_rr: 2.5
   zigzag_window: 3

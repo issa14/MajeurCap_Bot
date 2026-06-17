@@ -18,8 +18,7 @@ from module4_backtest import simulate_trade
 from metrics import compute_metrics
 
 async def run_single_backtest(scenario_params: dict, symbols: list = None, start_idx: int = 150):
-    base_config = get_config()
-    config = copy.deepcopy(base_config)
+    config = copy.deepcopy(get_config())
     if "signal" not in config: config["signal"] = {}
     
     # Injection des paramètres du scénario
@@ -57,10 +56,11 @@ async def run_single_backtest(scenario_params: dict, symbols: list = None, start
                 future = enriched.iloc[i+1:]
                 if not future.empty:
                     trade_result = simulate_trade(future, sig, config)
+                    leverage = config.get("risk", {}).get("leverage", 1)
                     all_trades.append({
                         "symbol": symbol,
                         "entry_date": enriched.iloc[i]["timestamp"],
-                        "pnl_pct": trade_result["pnl_pct"],
+                        "pnl_pct": trade_result["pnl_pct"] * leverage,
                         "result": trade_result["result"]
                     })
                     i = trade_result["exit_idx"]
@@ -69,6 +69,7 @@ async def run_single_backtest(scenario_params: dict, symbols: list = None, start
 
 async def main():
     logging.basicConfig(level=logging.WARNING)
+    base_config = get_config()
     
     scenarios = [
         ("adx_only",    True,  False, False, 1.5, False),

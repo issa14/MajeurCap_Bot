@@ -331,7 +331,9 @@ async def open_position(signal: dict, config: dict) -> dict:
         return {"success": False, "reason": "Taille de position nulle"}
 
     auto_exec = config.get("execution", {}).get("auto_execute", False)
-    sl_order_id = None
+    sl_order_id  = None
+    tp1_order_id = None
+    tp2_order_id = None
     if auto_exec:
         result = await execute_signal(signal, quantity)
         if not result["success"]:
@@ -340,7 +342,9 @@ async def open_position(signal: dict, config: dict) -> dict:
             else:
                 return {"success": False, "reason": "Échec exécution API"}
         else:
-            sl_order_id = result.get("sl_order", {}).get("id")
+            sl_order_id  = result.get("sl_order",  {}).get("id")
+            tp1_order_id = result.get("tp1_order", {}).get("id") if result.get("tp1_order") else None
+            tp2_order_id = result.get("tp2_order", {}).get("id") if result.get("tp2_order") else None
 
     new_pos = {
         "symbol": symbol,
@@ -353,7 +357,9 @@ async def open_position(signal: dict, config: dict) -> dict:
         "entry_date": datetime.now(timezone.utc).isoformat(),
         "status": "active",
         "partial_exit": 0,
-        "sl_order_id": sl_order_id,
+        "sl_order_id":  sl_order_id,
+        "tp1_order_id": tp1_order_id,
+        "tp2_order_id": tp2_order_id,
     }
     
     db.insert_position(new_pos)

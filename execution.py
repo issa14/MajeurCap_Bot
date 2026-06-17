@@ -59,12 +59,16 @@ async def set_leverage(exchange: ccxt_async.binance, symbol: str, leverage: int)
 
 async def execute_signal(signal: dict, quantity: float) -> dict:
     """
-    Ouvre une position futures (LONG ou SHORT) et place un STOP_MARKET.
+    Ouvre une position futures (LONG ou SHORT) et place SL + TP1 + TP2 sur l'exchange.
 
-    Différences vs spot :
-    - SHORT = create_market_order side='sell' (vente à découvert, pas besoin d'avoir l'actif)
-    - SL     = STOP_MARKET (exécuté au marché dès que stopPrice est touché)
-    - Levier = configurable via config.yaml → risk.leverage (défaut: 1)
+    Ordres placés :
+    - Entrée  : create_market_order
+    - SL      : STOP_MARKET      — stopPrice=sl,  reduceOnly=True (toute la qty)
+    - TP1     : TAKE_PROFIT_MARKET — stopPrice=tp1, reduceOnly=True (50% qty)
+    - TP2     : TAKE_PROFIT_MARKET — stopPrice=tp2, reduceOnly=True (100% qty)
+
+    TP1/TP2 survivent aux redémarrages du bot car placés directement sur Binance.
+    Si TP1 ou TP2 échouent, un warning est loggé et la surveillance logicielle prend le relais.
     """
     exchange = await init_trading_exchange()
     symbol   = signal["symbol"]
@@ -89,34 +93,31 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
         )
         log.info(f"Ordre d'entrée exécuté : {entry_order['id']} (Status: {entry_order['status']})")
 
-        # 2. Stop-loss STOP_MARKET (futures — pas stop_loss_limit qui est spot-only)
+        # 2. Stop-loss STOP_MARKET
         try:
             sl_price = signal["sl"]
             log.info(f"Placement SL STOP_MARKET : stopPrice={sl_price}, side={sl_side}")
             sl_order = await exchange.create_order(
                 symbol=symbol,
-                type="stop_market",           # ← type futures correct
+                type="stop_market",
                 side=sl_side,
                 amount=quantity,
-                price=None,                   # STOP_MARKET n'a pas de limit price
+                price=None,
                 params={
                     "stopPrice":   sl_price,
-                    "reduceOnly":  True,       # ← ferme uniquement, ne crée pas de nouvelle position
+                    "reduceOnly":  True,
                     "closePosition": False,
                 },
             )
             log.info(f"Stop-loss placé : {sl_order['id']}")
-            return {"entry_order": entry_order, "sl_order": sl_order, "success": True}
-
         except Exception as sl_error:
             log.critical(
                 f"FATAL: Entrée OK mais échec placement SL ({sl_error}). Sortie d'urgence !"
             )
             try:
-                emergency_side  = sl_side   # même sens que le SL pour fermer
-                emergency_exit  = await exchange.create_market_order(
+                emergency_exit = await exchange.create_market_order(
                     symbol=symbol,
-                    side=emergency_side,
+                    side=sl_side,
                     amount=quantity,
                     params={"reduceOnly": True},
                 )
@@ -125,6 +126,55 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
             except Exception as exit_error:
                 log.critical(f"DANGER : Échec sortie d'urgence ! Position ouverte sans SL. {exit_error}")
                 return {"success": False, "error": "SL_FAILED_EXIT_FAILED", "entry_order": entry_order}
+
+        # 3. TP1 — TAKE_PROFIT_MARKET à 50% de la quantité
+        tp1_order = None
+        try:
+            tp1_price = signal["tp1"]
+            qty_tp1 = round(quantity * 0.5, 8)
+            log.info(f"Placement TP1 TAKE_PROFIT_MARKET : stopPrice={tp1_price}, qty={qty_tp1}")
+            tp1_order = await exchange.create_order(
+                symbol=symbol,
+                type="take_profit_market",
+                side=sl_side,
+                amount=qty_tp1,
+                price=None,
+                params={
+                    "stopPrice":  tp1_price,
+                    "reduceOnly": True,
+                },
+            )
+            log.info(f"TP1 placé : {tp1_order['id']}")
+        except Exception as tp1_error:
+            log.warning(f"Échec placement TP1 ({tp1_error}) — surveillance logicielle active")
+
+        # 4. TP2 — TAKE_PROFIT_MARKET sur la totalité (ferme le reste)
+        tp2_order = None
+        try:
+            tp2_price = signal["tp2"]
+            log.info(f"Placement TP2 TAKE_PROFIT_MARKET : stopPrice={tp2_price}, qty={quantity}")
+            tp2_order = await exchange.create_order(
+                symbol=symbol,
+                type="take_profit_market",
+                side=sl_side,
+                amount=quantity,
+                price=None,
+                params={
+                    "stopPrice":  tp2_price,
+                    "reduceOnly": True,
+                },
+            )
+            log.info(f"TP2 placé : {tp2_order['id']}")
+        except Exception as tp2_error:
+            log.warning(f"Échec placement TP2 ({tp2_error}) — surveillance logicielle active")
+
+        return {
+            "entry_order": entry_order,
+            "sl_order":    sl_order,
+            "tp1_order":   tp1_order,
+            "tp2_order":   tp2_order,
+            "success":     True,
+        }
 
     except ccxt_async.InsufficientFunds as e:
         log.error(f"Fonds insuffisants pour {symbol} : {e}")

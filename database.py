@@ -34,6 +34,8 @@ class DatabaseManager:
                     tp2_price REAL NOT NULL,
                     partial_exit BOOLEAN DEFAULT 0,
                     sl_order_id TEXT,
+                    tp1_order_id TEXT,
+                    tp2_order_id TEXT,
                     exit_price REAL,
                     exit_date TEXT,
                     exit_reason TEXT,
@@ -47,6 +49,10 @@ class DatabaseManager:
             columns = [info[1] for info in cursor.fetchall()]
             if 'pnl_usd' not in columns:
                 cursor.execute("ALTER TABLE positions ADD COLUMN pnl_usd REAL")
+            if 'tp1_order_id' not in columns:
+                cursor.execute("ALTER TABLE positions ADD COLUMN tp1_order_id TEXT")
+            if 'tp2_order_id' not in columns:
+                cursor.execute("ALTER TABLE positions ADD COLUMN tp2_order_id TEXT")
 
             # Index unique pour éviter les doublons sur les positions actives
             cursor.execute("""
@@ -98,14 +104,15 @@ class DatabaseManager:
                 INSERT INTO positions (
                     symbol, direction, status, entry_price, entry_date, 
                     quantity, sl_price, tp1_price, tp2_price, 
-                    partial_exit, sl_order_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    partial_exit, sl_order_id, tp1_order_id, tp2_order_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             cursor.execute(query, (
                 pos_data["symbol"], pos_data["direction"], pos_data["status"],
                 pos_data["entry"], pos_data["entry_date"], pos_data["quantity"],
                 pos_data["sl"], pos_data["tp1"], pos_data["tp2"],
-                pos_data.get("partial_exit", 0), pos_data.get("sl_order_id")
+                pos_data.get("partial_exit", 0), pos_data.get("sl_order_id"),
+                pos_data.get("tp1_order_id"), pos_data.get("tp2_order_id")
             ))
             conn.commit()
             return cursor.lastrowid
