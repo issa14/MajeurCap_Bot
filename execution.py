@@ -83,6 +83,13 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
         # 0. Définir le levier
         await set_leverage(exchange, symbol, leverage)
 
+                # 0. Charger les marchés et arrondir la quantité au stepSize Binance (évite LOT_SIZE errors)
+        await exchange.load_markets()
+        quantity = float(exchange.amount_to_precision(symbol, quantity))
+        if quantity <= 0:
+            log.error(f"{symbol} — quantité arrondie à 0 après application du stepSize, ordre annulé")
+            return {"success": False, "error": "QUANTITY_TOO_SMALL"}
+
         # 1. Ordre d'entrée au marché
         log.info(f"Envoi ordre d'entrée futures {side} {quantity} {symbol} (levier {leverage}x)")
         entry_order = await exchange.create_market_order(
@@ -91,12 +98,15 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
             amount=quantity,
             params={"reduceOnly": False},
         )
+
         log.info(f"Ordre d'entrée exécuté : {entry_order['id']} (Status: {entry_order['status']})")
 
         # 2. Stop-loss STOP_MARKET
         try:
             sl_price = signal["sl"]
             log.info(f"Placement SL STOP_MARKET : stopPrice={sl_price}, side={sl_side}")
+            await exchange.load_markets()
+            quantity = float(exchange.amount_to_precision(symbol, quantity))
             sl_order = await exchange.create_order(
                 symbol=symbol,
                 type="stop_market",
@@ -131,7 +141,7 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
         tp1_order = None
         try:
             tp1_price = signal["tp1"]
-            qty_tp1 = round(quantity * 0.5, 8)
+            qty_tp1 = float(exchange.amount_to_precision(symbol, quantity * 0.5))
             log.info(f"Placement TP1 TAKE_PROFIT_MARKET : stopPrice={tp1_price}, qty={qty_tp1}")
             tp1_order = await exchange.create_order(
                 symbol=symbol,

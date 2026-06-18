@@ -6,7 +6,7 @@ config = get_config()
 # Correction du nom de clé pour correspondre à config.yaml
 binance_cfg = config.get('binance_testnet', {})
 
-print(f"DEBUG: binance_cfg chargés : {binance_cfg}")
+print(f"DEBUG: clés API chargées (demo={binance_cfg.get('demo', True)}, api_key={'***' + binance_cfg.get('api_key', '')[-4:] if binance_cfg.get('api_key') else 'MANQUANTE'})")
 
 # Initialisation basée sur la config existante
 exchange = ccxt.binance({
