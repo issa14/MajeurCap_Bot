@@ -67,6 +67,22 @@ class DatabaseManager:
                     last_sent_at TEXT NOT NULL
                 )
             """)
+            # Table pour enregistrer chaque signal détecté
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS signals_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    detected_at TEXT NOT NULL,
+                    entry REAL,
+                    sl REAL,
+                    tp1 REAL,
+                    tp2 REAL,
+                    confluences TEXT,
+                    traded BOOLEAN DEFAULT 0,
+                    reject_reason TEXT
+                );
+            """)
             conn.commit()
 
     def get_signal_cooldowns(self) -> dict:
@@ -85,7 +101,46 @@ class DatabaseManager:
                     continue
             return cooldowns
 
-    def update_signal_cooldown(self, symbol: str, last_sent_at: datetime):
+
+    def insert_signal_log(self, symbol: str, direction: str, entry: float, sl: float,
+                           tp1: float, tp2: float, confluences: list,
+                           traded: bool, reject_reason: str = None):
+        """Enregistre un signal détecté (tradé ou rejeté) pour l'historique/dashboard."""
+        import json
+        from datetime import datetime, timezone
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO signals_log
+                    (symbol, direction, detected_at, entry, sl, tp1, tp2, confluences, traded, reject_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                symbol,
+                direction,
+                datetime.now(timezone.utc).isoformat(),
+                entry,
+                sl,
+                tp1,
+                tp2,
+                json.dumps(confluences),
+                int(traded),
+                reject_reason,
+            ))
+            conn.commit()
+
+    def get_recent_signals(self, limit: int = 20) -> list:
+        """Retourne les N derniers signaux détectés (tradés ou non)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT symbol, direction, detected_at, entry, sl, tp1, tp2, confluences, traded, reject_reason
+                FROM signals_log
+                ORDER BY detected_at DESC
+                LIMIT ?
+            """, (limit,))
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
         """Met à jour ou insère un cooldown pour un symbole."""
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -97,6 +152,7 @@ class DatabaseManager:
             conn.commit()
 
     def insert_position(self, pos_data: dict) -> int:
+        # pass removed
         """Insère une nouvelle position et retourne son ID."""
         with self._connect() as conn:
             cursor = conn.cursor()

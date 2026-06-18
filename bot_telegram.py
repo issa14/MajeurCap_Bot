@@ -131,6 +131,22 @@ async def run_scan_cycle():
             # Le trade est TOUJOURS tenté, indépendamment du cooldown Telegram
             result = await open_position(sig, config)
 
+            # Log du signal pour historique/dashboard (tradé ou non)
+            try:
+                db.insert_signal_log(
+                    symbol=pair,
+                    direction=sig.get("direction", ""),
+                    entry=sig.get("entry"),
+                    sl=sig.get("sl"),
+                    tp1=sig.get("tp1"),
+                    tp2=sig.get("tp2"),
+                    confluences=sig.get("confluences", []),
+                    traded=result.get("success", False),
+                    reject_reason=result.get("reason") if not result.get("success") else None,
+                )
+            except Exception as log_error:
+                log.warning(f"Échec log signal {pair}: {log_error}")
+
             if result["success"]:
                 # Nouvelle position ouverte : on notifie et on mémorise
                 _signal_sent_at[pair] = now
