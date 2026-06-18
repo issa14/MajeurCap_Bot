@@ -8,6 +8,7 @@ certifi==2026.5.20
 cffi==2.0.0
 charset-normalizer==3.4.7
 cryptography==48.0.0
+fastapi==0.115.6
 frozenlist==1.8.0
 idna==3.18
 multidict==6.7.1
@@ -24,4 +25,5 @@ six==1.17.0
 ta==0.11.0
 typing_extensions==4.15.0
 urllib3==2.7.0
+uvicorn==0.34.0
 yarl==1.24.2
