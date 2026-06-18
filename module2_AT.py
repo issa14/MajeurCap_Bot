@@ -203,9 +203,10 @@ def get_daily_trend_at_timestamp(symbol: str, timestamp, daily_data: dict, confi
     df_daily_sub = df_daily[df_daily["timestamp"] < timestamp]
     if len(df_daily_sub) < 50:
         return {"trend": "neutral", "reason": "not enough daily candles"}
-        
-    daily_strict = config.get("daily_trend_strict", config.get("signal", {}).get("daily_trend_strict", True))
-    
+
+    # Lire depuis signal.* en priorité (injection backtest/scénario), fallback racine, défaut False
+    daily_strict = config.get("signal", {}).get("daily_trend_strict", config.get("daily_trend_strict", False))
+
     # Global Market Filter based on BTC trend
     btc_symbol = next((s for s in daily_data.keys() if "BTC/" in s), "BTC/USDT")
     btc_trend = None
@@ -217,11 +218,12 @@ def get_daily_trend_at_timestamp(symbol: str, timestamp, daily_data: dict, confi
             
     symbol_trend = compute_daily_trend(df_daily_sub, strict=daily_strict)
     
+    # Global Market Filter for altcoins based on BTC trend
     if symbol != btc_symbol and btc_trend:
         if btc_trend["trend"] == "bearish" and symbol_trend["trend"] == "bullish":
             symbol_trend["trend"] = "neutral"
             symbol_trend["reason"] = "BTC is bearish"
-        elif btc_trend["trend"] == "neutral":
+        elif btc_trend["trend"] == "neutral" and daily_strict:
             symbol_trend["trend"] = "neutral"
             symbol_trend["reason"] = "BTC is neutral"
             
@@ -233,7 +235,8 @@ def analyze_all(data: dict, config: dict, include_incomplete: bool = False, dail
     results = {}
 
     daily_filter_config = config.get("signal", {}).get("daily_filter_enabled", False)
-    daily_strict = config.get("daily_trend_strict", config.get("signal", {}).get("daily_trend_strict", True))
+    # Lire depuis signal.* en priorité (injection backtest/scénario), fallback racine, défaut False
+    daily_strict = config.get("signal", {}).get("daily_trend_strict", config.get("daily_trend_strict", False))
 
     for symbol, df in data.items():
         try:
@@ -264,7 +267,7 @@ def analyze_all(data: dict, config: dict, include_incomplete: bool = False, dail
                     if btc_trend["trend"] == "bearish" and symbol_trend["trend"] == "bullish":
                         symbol_trend["trend"] = "neutral"
                         symbol_trend["reason"] = "BTC is bearish"
-                    elif btc_trend["trend"] == "neutral":
+                    elif btc_trend["trend"] == "neutral" and daily_strict:
                         symbol_trend["trend"] = "neutral"
                         symbol_trend["reason"] = "BTC is neutral"
 

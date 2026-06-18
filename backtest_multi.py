@@ -24,6 +24,8 @@ async def run_single_backtest(scenario_params: dict, symbols: list = None, start
     # Injection des paramètres du scénario
     config["signal"].update(scenario_params)
     config["candles_limit"] = 1000
+    # Propager daily_trend_strict à la racine (get_daily_trend_at_timestamp lit les deux niveaux)
+    config["daily_trend_strict"] = scenario_params.get("daily_trend_strict", False)
 
     exchange = await init_exchange_async()
     try:

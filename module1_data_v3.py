@@ -220,7 +220,7 @@ async def fetch_daily_all_async(
     params = _get_data_params()
     syms = symbols if symbols is not None else params["watchlist"]
     log.info(f"=== Début fetch daily async — {len(syms)} paires ===")
-    tasks = [fetch_ohlcv_async(exchange, symbol, timeframe="1d", limit=200, use_cache=use_cache) for symbol in syms]
+    tasks = [fetch_ohlcv_async(exchange, symbol, timeframe="1d", limit=400, use_cache=use_cache) for symbol in syms]
     results_list = await asyncio.gather(*tasks)
 
     results = {}

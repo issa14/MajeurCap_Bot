@@ -11,7 +11,7 @@ watchlist:
 - SOL/USDT
 - VET/USDT
 
-timeframe: "4h"
+timeframe: 4h
 candles_limit: 500
 cache_ttl_minutes: 240
 max_retries: 3
@@ -40,7 +40,7 @@ signal:
   adx_threshold: 20
   fibo_proximity_atr_mult: 0.5
   fibo_proximity_pct_max: 0.6
-  kc_filter: false
+  kc_filter: true
   min_confluences: 3
   min_confluences_no_struct: 4
   min_pivots: 4
