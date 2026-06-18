@@ -395,7 +395,17 @@ async def open_position(signal: dict, config: dict) -> dict:
         "tp2_order_id": tp2_order_id,
     }
     
+    # Guard — évite le UNIQUE constraint error si deux cycles tentent d'ouvrir le même symbole
+    existing = [p for p in db.get_active_positions() if p.get("symbol") == symbol and p.get("status") == "active"]
+    if existing:
+        log.warning(f"{symbol} — position déjà active en DB, insertion annulée (doublon évité)")
+        active_positions[symbol] = existing[0]
+        return {"success": False, "reason": "position_already_active"}
+
     db.insert_position(new_pos)
+
+    log.info(f"Nouvelle position ouverte : {symbol} {signal['direction']} qty={quantity}")
+    return {"success": True, "quantity": quantity}
 
     log.info(f"Nouvelle position ouverte : {symbol} {signal['direction']} qty={quantity}")
     return {"success": True, "quantity": quantity}
