@@ -25,6 +25,31 @@ from dashboard import (
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("dashboard_api")
 
+
+async def _fetch_with_retry(coro_func, *args, attempts: int = 5, delay: float = 2.0):
+    """
+    Retry simple pour contourner un bug connu CCXT/Binance Demo où la connexion
+    se ferme parfois en plein milieu d'une réponse (StreamReader non parsé).
+    Voir https://github.com/ccxt/ccxt/issues/27544
+    """
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await coro_func(*args)
+        except AttributeError as exc:
+            if "StreamReader" in str(exc):
+                last_exc = exc
+                log.warning(f"Tentative {attempt}/{attempts} échouée (StreamReader bug Binance Demo), retry dans {delay}s")
+                await asyncio.sleep(delay)
+            else:
+                raise
+        except Exception as exc:
+            last_exc = exc
+            log.warning(f"Tentative {attempt}/{attempts} échouée ({exc}), retry dans {delay}s")
+            await asyncio.sleep(delay)
+    raise last_exc
+
+
 app = FastAPI(title="MajeurCap_Bot Dashboard API")
 
 app.add_middleware(
@@ -44,13 +69,34 @@ async def get_dashboard_data():
 
     exchange = await get_exchange(config)
     try:
-        balance, tickers = await asyncio.gather(
-            exchange.fetch_balance(),
-            exchange.fetch_tickers(watchlist),
-        )
+        balance = await _fetch_with_retry(exchange.fetch_balance)
     except Exception as exc:
+        log.exception("Échec fetch_balance() après retries")
         await exchange.close()
-        return {"error": str(exc)}
+        return {"error": f"fetch_balance failed after retries: {exc}"}
+
+    try:
+        raw_tickers = await _fetch_with_retry(exchange.fetch_tickers, watchlist)
+    except Exception as exc:
+        log.exception("Échec fetch_tickers() après retries")
+        await exchange.close()
+        return {"error": f"fetch_tickers failed after retries: {exc}"}
+
+    try:
+        # Normaliser les clés : CCXT retourne "SUI/USDT:USDT" (format futures perpetual)
+        # mais le reste du code (DB, config, watchlist) utilise "SUI/USDT"
+        tickers = {sym.split(":")[0]: t for sym, t in raw_tickers.items()}
+        # Ensure ticker data includes active position symbols not in watchlist
+        all_positions = db.get_all_positions()
+        active_symbols = {p["symbol"] for p in all_positions if p.get("status") != "closed"}
+        missing_symbols = list(active_symbols - set(tickers.keys()))
+        if missing_symbols:
+            extra_tickers = await exchange.fetch_tickers(missing_symbols)
+            tickers.update(extra_tickers)
+    except Exception as exc:
+        log.exception("Échec normalisation tickers")
+        await exchange.close()
+        return {"error": f"ticker normalization failed: {exc}"}
 
     try:
         all_positions = db.get_all_positions()

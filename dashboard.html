@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MajeurCap_Bot — Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.1.0/iconfont/tabler-icons.min.css">
+<style>
+  :root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #1c2128;
+    --border: #30363d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-tertiary: #6e7681;
+    --green: #3fb950;
+    --green-dim: #1a7f37;
+    --red: #f85149;
+    --red-dim: #a3261c;
+    --amber: #d29922;
+    --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 24px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .header h1 {
+    font-size: 18px;
+    font-weight: 500;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 6px;
+  }
+  .status-ok { background: rgba(63,185,80,0.15); color: var(--green); }
+  .status-halted { background: rgba(248,81,73,0.15); color: var(--red); }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .last-update { font-size: 12px; color: var(--text-tertiary); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card .label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+  .card .value {
+    font-size: 22px;
+    font-weight: 500;
+  }
+  .card .sub {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+  }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+
+  .section { margin-bottom: 24px; }
+  .section-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 10px;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-tertiary); }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 5px;
+  }
+  .badge-long { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-short { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-traded { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .badge-rejected { background: rgba(139,148,158,0.15); color: var(--text-secondary); }
+
+  .sl-warn { color: var(--amber); font-size: 11px; }
+
+  .empty {
+    color: var(--text-tertiary);
+    font-size: 13px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  .error-banner {
+    background: rgba(248,81,73,0.1);
+    border: 1px solid var(--red-dim);
+    color: var(--red);
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+
+  .bar-track {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+
+  @media (max-width: 800px) {
+    .grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>
+      <i class="ti ti-robot" style="font-size:20px;"></i>
+      MajeurCap_Bot
+      <span id="status-badge" class="status-badge status-ok">
+        <span class="status-dot"></span>
+        <span id="status-text">CHARGEMENT</span>
+      </span>
+    </h1>
+    <span class="last-update" id="last-update">—</span>
+  </div>
+
+  <div id="error-container"></div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Equity totale</div>
+      <div class="value" id="equity">—</div>
+      <div class="sub" id="cash-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="label">PnL latent</div>
+      <div class="value" id="unrealized-pnl">—</div>
+      <div class="sub">positions ouvertes</div>
+    </div>
+    <div class="card">
+      <div class="label">PnL réalisé (cumulé)</div>
+      <div class="value" id="realized-pnl">—</div>
+      <div class="sub" id="winrate-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Drawdown du jour</div>
+      <div class="value" id="drawdown">—</div>
+      <div class="bar-track"><div class="bar-fill" id="dd-bar"></div></div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns: 1fr 1fr;">
+    <div class="card">
+      <div class="label">Exposition</div>
+      <div class="value" id="exposure">—</div>
+      <div class="bar-track"><div class="bar-fill" id="expo-bar" style="background: var(--blue);"></div></div>
+    </div>
+    <div class="card">
+      <div class="label">Trades</div>
+      <div class="value" id="total-trades">—</div>
+      <div class="sub" id="trades-sub">—</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Positions actives</div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbole</th>
+            <th>Direction</th>
+            <th>Entrée</th>
+            <th>Prix actuel</th>
+            <th>PnL</th>
+            <th>Distance SL</th>
+          </tr>
+        </thead>
+        <tbody id="positions-body">
+          <tr><td colspan="6" class="empty">Chargement...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Signaux récents</div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Heure</th>
+            <th>Symbole</th>
+            <th>Direction</th>
+            <th>Entrée / SL / TP1 / TP2</th>
+            <th>Statut</th>
+          </tr>
+        </thead>
+        <tbody id="signals-body">
+          <tr><td colspan="5" class="empty">Chargement...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Historique des trades</div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbole</th>
+            <th>Direction</th>
+            <th>Entrée</th>
+            <th>Sortie</th>
+            <th>PnL</th>
+            <th>Raison</th>
+            <th>Date sortie</th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="7" class="empty">Chargement...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+const REFRESH_MS = 10000;
+
+function fmtUsd(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${Number(v).toLocaleString("fr-FR", {minimumFractionDigits:2, maximumFractionDigits:2})} USD`;
+}
+function fmtPct(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${Number(v).toFixed(2)}%`;
+}
+function pnlClass(v) {
+  return v >= 0 ? "pos" : "neg";
+}
+function timeAgo(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMin = Math.round((now - d) / 60000);
+  if (diffMin < 1) return "à l'instant";
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `il y a ${diffH}h`;
+  return d.toLocaleDateString("fr-FR");
+}
+function fmtDateShort(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("fr-FR", {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
+}
+
+async function fetchJson(path) {
+  const res = await fetch(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function showError(msg) {
+  const c = document.getElementById("error-container");
+  c.innerHTML = `<div class="error-banner"><i class="ti ti-alert-triangle" style="margin-right:6px;"></i>${msg}</div>`;
+}
+function clearError() {
+  document.getElementById("error-container").innerHTML = "";
+}
+
+async function refreshDashboard() {
+  try {
+    const data = await fetchJson("/api/dashboard");
+    if (data.error) { showError(data.error); return; }
+    clearError();
+
+    const statusBadge = document.getElementById("status-badge");
+    const statusText = document.getElementById("status-text");
+    if (data.status === "HALTED") {
+      statusBadge.className = "status-badge status-halted";
+      statusText.textContent = "ARRÊTÉ (circuit breaker)";
+    } else {
+      statusBadge.className = "status-badge status-ok";
+      statusText.textContent = "OPÉRATIONNEL";
+    }
+
+    document.getElementById("equity").textContent = fmtUsd(data.equity.total_equity);
+    document.getElementById("cash-sub").textContent = `Cash dispo : ${fmtUsd(data.equity.cash_usdt)}`;
+
+    const upnl = document.getElementById("unrealized-pnl");
+    upnl.textContent = fmtUsd(data.equity.unrealized_pnl);
+    upnl.className = "value " + pnlClass(data.equity.unrealized_pnl);
+
+    const rpnl = document.getElementById("realized-pnl");
+    rpnl.textContent = fmtPct(data.performance.realized_pnl_pct);
+    rpnl.className = "value " + pnlClass(data.performance.realized_pnl_pct);
+    document.getElementById("winrate-sub").textContent =
+      `WR ${data.performance.win_rate_pct.toFixed(1)}% (${data.performance.wins}/${data.performance.total_trades})`;
+
+    const dd = document.getElementById("drawdown");
+    dd.textContent = fmtPct(data.risk.daily_drawdown_pct);
+    dd.className = "value " + (data.risk.daily_drawdown_pct < 0 ? "neg" : "pos");
+    const ddPct = Math.min(100, Math.abs(data.risk.daily_drawdown_pct / data.risk.daily_drawdown_limit_pct) * 100);
+    const ddBar = document.getElementById("dd-bar");
+    ddBar.style.width = `${ddPct}%`;
+    ddBar.style.background = ddPct > 80 ? "var(--red)" : ddPct > 50 ? "var(--amber)" : "var(--green)";
+
+    document.getElementById("exposure").textContent =
+      `${data.risk.exposure_pct.toFixed(1)}% / ${data.risk.max_exposure_pct}%`;
+    document.getElementById("expo-bar").style.width =
+      `${Math.min(100, (data.risk.exposure_pct / data.risk.max_exposure_pct) * 100)}%`;
+
+    document.getElementById("total-trades").textContent = data.performance.total_trades;
+    document.getElementById("trades-sub").textContent = `${data.active_positions.length} position(s) ouverte(s)`;
+
+    const posBody = document.getElementById("positions-body");
+    if (data.active_positions.length === 0) {
+      posBody.innerHTML = `<tr><td colspan="6" class="empty">Aucune position ouverte</td></tr>`;
+    } else {
+      posBody.innerHTML = data.active_positions.map(p => `
+        <tr>
+          <td>${p.symbol}</td>
+          <td><span class="badge ${p.direction === 'LONG' ? 'badge-long' : 'badge-short'}">${p.direction}</span></td>
+          <td>${p.entry}</td>
+          <td>${p.current_price}</td>
+          <td class="${pnlClass(p.pnl_pct)}">${fmtPct(p.pnl_pct)}</td>
+          <td>${p.sl_distance_pct.toFixed(2)}% ${p.sl_warning ? '<span class="sl-warn"><i class="ti ti-alert-triangle"></i></span>' : ''}</td>
+        </tr>
+      `).join("");
+    }
+
+    document.getElementById("last-update").textContent = `Mis à jour ${new Date().toLocaleTimeString("fr-FR")}`;
+  } catch (e) {
+    showError(`Impossible de contacter l'API (${e.message}). Vérifie que dashboard_api.py tourne sur le port 8000.`);
+  }
+}
+
+async function refreshSignals() {
+  try {
+    const data = await fetchJson("/api/signals?limit=15");
+    const body = document.getElementById("signals-body");
+    if (!data.signals || data.signals.length === 0) {
+      body.innerHTML = `<tr><td colspan="5" class="empty">Aucun signal récent</td></tr>`;
+      return;
+    }
+    body.innerHTML = data.signals.map(s => `
+      <tr>
+        <td title="${s.detected_at}">${timeAgo(s.detected_at)}</td>
+        <td>${s.symbol}</td>
+        <td><span class="badge ${s.direction === 'LONG' ? 'badge-long' : 'badge-short'}">${s.direction}</span></td>
+        <td style="font-size:12px; color:var(--text-secondary);">
+          ${s.entry ?? '—'} / ${s.sl ?? '—'} / ${s.tp1 ?? '—'} / ${s.tp2 ?? '—'}
+        </td>
+        <td>
+          ${s.traded
+            ? '<span class="badge badge-traded"><i class="ti ti-check"></i> Tradé</span>'
+            : `<span class="badge badge-rejected">${s.reject_reason || 'Rejeté'}</span>`}
+        </td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    document.getElementById("signals-body").innerHTML =
+      `<tr><td colspan="5" class="empty">Erreur de chargement</td></tr>`;
+  }
+}
+
+async function refreshHistory() {
+  try {
+    const data = await fetchJson("/api/history?limit=20");
+    const body = document.getElementById("history-body");
+    if (!data.trades || data.trades.length === 0) {
+      body.innerHTML = `<tr><td colspan="7" class="empty">Aucun trade clôturé</td></tr>`;
+      return;
+    }
+    body.innerHTML = data.trades.map(t => `
+      <tr>
+        <td>${t.symbol}</td>
+        <td><span class="badge ${t.direction === 'LONG' ? 'badge-long' : 'badge-short'}">${t.direction}</span></td>
+        <td>${t.entry_price ?? '—'}</td>
+        <td>${t.exit_price ?? '—'}</td>
+        <td class="${pnlClass(t.pnl_pct || 0)}">${fmtPct(t.pnl_pct)}</td>
+        <td style="font-size:12px; color:var(--text-secondary);">${t.exit_reason ?? '—'}</td>
+        <td style="font-size:12px; color:var(--text-tertiary);">${fmtDateShort(t.exit_date)}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    document.getElementById("history-body").innerHTML =
+      `<tr><td colspan="7" class="empty">Erreur de chargement</td></tr>`;
+  }
+}
+
+function refreshAll() {
+  refreshDashboard();
+  refreshSignals();
+  refreshHistory();
+}
+
+refreshAll();
+setInterval(refreshAll, REFRESH_MS);
+</script>
+</body>
+</html>
