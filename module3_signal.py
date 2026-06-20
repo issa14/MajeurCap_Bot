@@ -114,6 +114,86 @@ def check_confluences(df, fibo, structure, direction, config: dict) -> list:
     if last.get("vol_surge"): c.append("Volume élevé")
     return c
 
+
+def compute_confluence_score(df, fibo, structure, direction, config: dict) -> float:
+    """
+    Score pondéré des confluences, utilisé pour la décision de seuil (generate_signal).
+    Contrairement à check_confluences() (liste brute pour affichage/log), cette fonction
+    regroupe les facteurs corrélés et plafonne leur contribution combinée, pour éviter
+    qu'un même phénomène de marché (ex: tendance haussière) ne soit compté plusieurs fois.
+
+    Pondération :
+    - BOS = 1.5 pt, CHoCH = 2.0 pt (structure, mutuellement exclusifs en pratique)
+    - Groupe tendance (EMA20>50, above_EMA200) : max 1.0 pt combiné
+    - Groupe momentum (RSI zone, position KC) : max 1.0 pt combiné
+    - Fibo proximité = 0.5 pt, Volume surge = 0.5 pt (indépendants, poids faible)
+    """
+    last, close = df.iloc[-1], df.iloc[-1]["close"]
+    sig_cfg = config.get("signal", {})
+    rsi_long = tuple(sig_cfg.get("rsi_long_zone", [30, 45]))
+    rsi_short = tuple(sig_cfg.get("rsi_short_zone", [55, 70]))
+    kc_enabled = sig_cfg.get("kc_filter", True)
+
+    atr_pct = last["atr"] / close * 100
+    fibo_prox_max = sig_cfg.get("fibo_proximity_pct_max", 1.0)
+    fibo_prox = min(atr_pct * sig_cfg.get("fibo_proximity_atr_mult", 0.5), fibo_prox_max)
+
+    score = 0.0
+
+    # Structure — BOS/CHoCH, non plafonnés ensemble (mutuellement exclusifs dans detect_structure)
+    if direction == "long":
+        if structure.get("bos") == "bullish":
+            score += 1.5
+        if structure.get("choch") == "bullish":
+            score += 2.0
+    else:
+        if structure.get("bos") == "bearish":
+            score += 1.5
+        if structure.get("choch") == "bearish":
+            score += 2.0
+
+    # Groupe tendance — EMA20>50 et above_EMA200 sont corrélés, plafonné à 1.0 combiné
+    trend_triggered = False
+    if direction == "long":
+        if last.get("ema_bullish"):
+            trend_triggered = True
+        if last.get("above_ema200"):
+            trend_triggered = True
+    else:
+        if not last.get("ema_bullish"):
+            trend_triggered = True
+        if not last.get("above_ema200"):
+            trend_triggered = True
+    if trend_triggered:
+        score += 1.0
+
+    # Groupe momentum/position — RSI zone et position KC sont corrélés, plafonné à 1.0 combiné
+    momentum_triggered = False
+    rsi = last["rsi"]
+    if direction == "long" and rsi_long[0] <= rsi <= rsi_long[1]:
+        momentum_triggered = True
+    elif direction == "short" and rsi_short[0] <= rsi <= rsi_short[1]:
+        momentum_triggered = True
+    if kc_enabled:
+        if direction == "long" and last["kc_lower"] <= close <= last["kc_mid"]:
+            momentum_triggered = True
+        elif direction == "short" and last["kc_mid"] <= close <= last["kc_upper"]:
+            momentum_triggered = True
+    if momentum_triggered:
+        score += 1.0
+
+    # Confirmation — Fibo et volume, indépendants, poids faible
+    if fibo and "levels" in fibo:
+        for k, lp in fibo["levels"].items():
+            if abs(close - lp) / close * 100 <= fibo_prox:
+                score += 0.5
+                break
+
+    if last.get("vol_surge"):
+        score += 0.5
+
+    return round(score, 2)
+
 def compute_levels(close, atr, direction, config: dict) -> dict:
     sig_cfg = config.get("signal", {})
     sl_mult = sig_cfg.get("sl_atr_mult", 1.5)
@@ -166,18 +246,73 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
             if direction == "short" and daily_trend["trend"] != "bearish": continue
 
         confluences = check_confluences(df, fibo, structure, direction, config)
-        if len(confluences) >= threshold and len(confluences) > best_confluence_count:
+        score = compute_confluence_score(df, fibo, structure, direction, config)
+        if score >= threshold and score > best_confluence_count:
             levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
-            best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences, 
-                           "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"], 
+            best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences,
+                           "confluence_score": score,
+                           "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"],
                            "adx": df.iloc[-1].get("adx", 0), **levels}
-            best_confluence_count = len(confluences)
+            best_confluence_count = score
 
     return best_signal
 
-def scan_all(analyzed: dict, config: dict) -> list:
+
+
+def generate_signal_mtf(symbol: str, df: pd.DataFrame, config: dict,
+                         daily_trend: Optional[dict] = None,
+                         daily_structure: Optional[dict] = None) -> Optional[dict]:
+    """
+    Variante multi-timeframe de generate_signal() :
+    - Structure (BOS/CHoCH) et Fibonacci proviennent du DAILY (daily_structure)
+    - RSI, Keltner Channel, volume, EMA restent vérifiés sur le 4h (df)
+    - daily_trend reste le filtre directionnel binaire existant (bullish/bearish/neutral)
+
+    daily_structure attendu sous la forme retournée par
+    module2_AT.get_daily_structure_at_timestamp() : {"structure": {...}, "fibo": {...}}
+    """
+    sig_cfg = config.get("signal", {})
+    adx_threshold = sig_cfg.get("adx_threshold", 20)
+    adx_required = sig_cfg.get("adx_required", False)
+    min_conf = sig_cfg.get("min_confluences", 3)
+    min_conf_no_str = sig_cfg.get("min_confluences_no_struct", 4)
+    min_pivots = sig_cfg.get("min_pivots", 4)
+
+    if adx_required and df.iloc[-1].get("adx", 0) < adx_threshold:
+        return None
+    if daily_trend and daily_trend.get("trend") == "neutral":
+        return None
+    if not daily_structure:
+        return None
+
+    structure = daily_structure.get("structure", {})
+    fibo = daily_structure.get("fibo", {})
+
+    threshold = min_conf if structure.get("pivots_count", 0) >= min_pivots else min_conf_no_str
+    spot_only = config.get("execution", {}).get("spot_only", False)
+
+    best_signal = None
+    best_confluence_count = 0
+    for direction in ["long", "short"]:
+        if spot_only and direction == "short":
+            continue
+        if daily_trend:
+            if direction == "long" and daily_trend["trend"] != "bullish":
+                continue
+            if direction == "short" and daily_trend["trend"] != "bearish":
+                continue
+        confluences = check_confluences(df, fibo, structure, direction, config)
+        if len(confluences) >= threshold and len(confluences) > best_confluence_count:
+            levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
+            best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences,
+                           "structure": structure, "fibo": fibo, "threshold": threshold,
+                           "atr": df.iloc[-1]["atr"], "adx": df.iloc[-1].get("adx", 0), "mtf": True, **levels}
+            best_confluence_count = len(confluences)
+    return best_signal
+
+
     signals = []
     for symbol, res in analyzed.items():
         sig = generate_signal(symbol, res["df"], config, daily_trend=res.get("daily_trend"))
         if sig: signals.append(sig)
-    return sorted(signals, key=lambda s: len(s["confluences"]), reverse=True)
+    return sorted(signals, key=lambda s: s.get("confluence_score", len(s["confluences"])), reverse=True)
