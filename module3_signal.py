@@ -311,6 +311,7 @@ def generate_signal_mtf(symbol: str, df: pd.DataFrame, config: dict,
     return best_signal
 
 
+def scan_all(analyzed: dict, config: dict) -> list:
     signals = []
     for symbol, res in analyzed.items():
         sig = generate_signal(symbol, res["df"], config, daily_trend=res.get("daily_trend"))
