@@ -148,15 +148,15 @@ async def run_scan_cycle():
                 log.warning(f"Échec log signal {pair}: {log_error}")
 
             if result["success"]:
-                # Nouvelle position ouverte : on notifie et on mémorise
+                # Nouvelle position ouverte : TOUJOURS notifier, le cooldown ne s'applique
+                # qu'au spam de signaux non tradés (rejetés), jamais à un trade réel.
                 _signal_sent_at[pair] = now
                 db.update_signal_cooldown(pair, now)
-                if not tg_on_cooldown:          # ← Telegram throttlé, pas le trade
-                    msg_detail = format_signal(sig)
-                    await send_telegram(msg_detail, config)
-                    quantity = result.get("quantity", 0)
-                    msg_exec = f"✅ <b>Ordre exécuté</b> pour {pair}\nQuantité : <code>{quantity:.6f}</code>\nEntrée : <code>{sig['entry']}</code>"
-                    await send_telegram(msg_exec, config)
+                msg_detail = format_signal(sig)
+                await send_telegram(msg_detail, config)
+                quantity = result.get("quantity", 0)
+                msg_exec = f"✅ <b>Ordre exécuté</b> pour {pair}\nQuantité : <code>{quantity:.6f}</code>\nEntrée : <code>{sig['entry']}</code>"
+                await send_telegram(msg_exec, config)
 
             elif result.get("reason") == "already_open":
                 log.info(f"{pair} — signal ignoré (position déjà ouverte)")
