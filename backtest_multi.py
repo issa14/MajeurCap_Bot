@@ -12,12 +12,19 @@ from config_loader import get_config
 
 sys.path.insert(0, ".")
 from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_all_async
-from module2_AT import clean_ohlcv, compute_indicators, get_daily_trend_at_timestamp
-from module3_signal import generate_signal
+from datetime import datetime, timezone, timedelta
+from module2_AT import clean_ohlcv, compute_indicators, get_daily_trend_at_timestamp, get_daily_structure_at_timestamp
+from module3_signal import generate_signal, generate_signal_mtf
 from module4_backtest import simulate_trade
 from metrics import compute_metrics
 
-async def run_single_backtest(scenario_params: dict, symbols: list = None, start_idx: int = 150):
+
+async def run_single_backtest(scenario_params: dict, symbols: list = None, start_idx: int = 150, since: int = None):
+    """
+    since : timestamp epoch ms optionnel. Si fourni, le backtest tourne sur une fenêtre
+    historique commençant à cette date plutôt que sur les données les plus récentes.
+    Utile pour valider qu'une config ne sur-apprend pas à la période récente.
+    """
     config = copy.deepcopy(get_config())
     if "signal" not in config: config["signal"] = {}
     
@@ -29,31 +36,38 @@ async def run_single_backtest(scenario_params: dict, symbols: list = None, start
 
     exchange = await init_exchange_async()
     try:
-        data = await fetch_all_async(exchange, symbols=symbols, use_cache=True)
+        data = await fetch_all_async(exchange, symbols=symbols, use_cache=(since is None), since=since)
         daily_data = {}
         if config["signal"].get("daily_filter_enabled"):
-            daily_data = await fetch_daily_all_async(exchange, symbols=symbols, use_cache=True)
+            daily_data = await fetch_daily_all_async(exchange, symbols=symbols, use_cache=(since is None), since=since)
     finally:
         await exchange.close()
 
-    if not data: return pd.DataFrame()
+    if not data:
+        return pd.DataFrame()
 
     all_trades = []
     for symbol, df in data.items():
         clean = clean_ohlcv(df)
         enriched = compute_indicators(clean, config, include_incomplete=False)
-        if enriched.empty: continue
+        if enriched.empty:
+            continue
 
         n = len(enriched)
         i = start_idx
+        cached_daily_structure = None
+        cached_daily_candle_count = -1
+        df_daily_for_symbol = daily_data.get(symbol) if daily_data else None
+
         while i < n - 10:
             daily_trend = None
             if config["signal"].get("daily_filter_enabled") and daily_data:
                 daily_trend = get_daily_trend_at_timestamp(symbol, enriched.iloc[i]["timestamp"], daily_data, config)
-            
+
             df_sub = enriched.iloc[:i+1]
+
             sig = generate_signal(symbol, df_sub, config, daily_trend=daily_trend)
-            
+
             if sig:
                 future = enriched.iloc[i+1:]
                 if not future.empty:
@@ -73,51 +87,58 @@ async def main():
     logging.basicConfig(level=logging.WARNING)
     base_config = get_config()
     
-    # Scénarios v2 — test axes : daily filter, min_confluences, KC filter
-    # Format : (name, adx_required, daily_filter, kc_filter, sl_mult, trailing, min_conf)
-    scenarios = [
-        ("base",         True, False, False, 2.0, False, 3),
-        ("daily",        True, True,  False, 2.0, False, 3),
-        ("conf4",        True, False, False, 2.0, False, 4),
-        ("kc",           True, False, True,  2.0, False, 3),
-        ("daily+conf4",  True, True,  False, 2.0, False, 4),
-        ("daily+kc",     True, True,  True,  2.0, False, 3),
-        ("conf4+kc",     True, False, True,  2.0, False, 4),
-        ("full",         True, True,  True,  2.0, False, 4),
+    # Old multi‑timeframe block removed
+
+    # (compute_confluence_score : max théorique ~4.5 avec BOS, ~5.0 avec CHoCH)
+    # Base fixe : daily_filter=true, kc_filter=true, sl_mult=2.0 (meilleur scénario connu)
+    # Format : (name, min_conf, min_conf_no_struct)
+    # Out-of-sample comparison: recent data vs historical window (~395 days ago)
+    # Evaluate weighted confluence score (min_confluences ~2.5) against old integer count (min_confluences ~3)
+    comparison_cases = [
+        ("recent", None),
+        ("historical", int((datetime.now(timezone.utc) - timedelta(days=395)).timestamp() * 1000)),
+    ]
+
+    # Configurations to test: weighted score and old count
+    config_candidates = [
+        ("score_2.5", 2.5, 3.0),
+        ("old_count_3", 3, 3.5),
     ]
 
     watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
 
     results = []
 
-    print(f"{'Scénario':<15} | {'Conf':<4} | {'Daily':<5} | {'KC':<5} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
+    print(f"{'Seuil':<12} | {'MinConf':<8} | {'NoStruct':<9} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
     print("-" * 100)
 
-    for name, adx, daily, kc, sl_mult, trailing, min_conf in scenarios:
-        params = {
-            "adx_required":        adx,
-            "daily_filter_enabled": daily,
-            "kc_filter":           kc,
-            "min_confluences":     min_conf,
-            "zigzag_window":       3,
-            "min_swing_diff_pct":  0.5,
-            "daily_trend_strict":  False,
-            "sl_atr_mult":         sl_mult,
-            "trailing_sl_enabled": trailing,
-        }
+    for case_name, since_ts in comparison_cases:
+        for cfg_name, min_conf, min_conf_no_struct in config_candidates:
+            params = {
+                "adx_required": True,
+                "daily_filter_enabled": True,
+                "kc_filter": True,
+                "min_confluences": min_conf,
+                "min_confluences_no_struct": min_conf_no_struct,
+                "zigzag_window": 3,
+                "min_swing_diff_pct": 0.5,
+                "daily_trend_strict": False,
+                "sl_atr_mult": 2.0,
+                "trailing_sl_enabled": False,
+            }
+            trades_df = await run_single_backtest(params, symbols=watchlist, since=since_ts)
+            m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
+            scenario_name = f"{cfg_name}_{case_name}"
+            res_entry = {
+                "scenario": scenario_name,
+                "min_confluences": min_conf,
+                **m,
+                "params": params,
+            }
+            results.append(res_entry)
+            print(f"{scenario_name:<12} | {min_conf:<8} | {min_conf_no_struct:<9} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
 
-        trades_df = await run_single_backtest(params, symbols=watchlist)
-        m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
-
-        res_entry = {
-            "scenario":        name,
-            "min_confluences": min_conf,
-            **m,
-            "params":          params,
-        }
-        results.append(res_entry)
-
-        print(f"{name:<15} | {min_conf:<4} | {str(daily):<5} | {str(kc):<5} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
+    # MTF scenarios block removed
 
 if __name__ == "__main__":
     asyncio.run(main())

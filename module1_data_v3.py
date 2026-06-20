@@ -95,14 +95,18 @@ def _add_is_closed(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 # ─── Initialisation exchange asynchrone ──────────────────────────────────────
 async def init_exchange_async() -> ccxt_async.binance:
     """
-    Exchange public (sans auth) pour la récupération des données OHLCV.
+    Exchange public (sans auth) avec chargement des marchés.
     defaultType: 'future' → prix des perpetuals USDⓈ-M (cohérent avec l'exécution futures).
     """
     exchange = ccxt_async.binance({
         "enableRateLimit": True,
         "options": {"defaultType": "future"},  # ← futures perpetuals pour les données
     })
-    log.info("Exchange Binance initialisé (mode public, futures, async)")
+    try:
+        await exchange.load_markets()
+        log.info("Exchange Binance initialisé (mode public, futures, async) — marchés chargés")
+    except Exception as e:
+        log.warning(f"Échec load_markets() à l'initialisation ({e}) — sera retenté implicitement par CCXT si besoin")
     return exchange
 
 # ─── Récupération OHLCV asynchrone ───────────────────────────────────────────
@@ -112,12 +116,19 @@ async def fetch_ohlcv_async(
     timeframe: Optional[str] = None,
     limit: Optional[int] = None,
     use_cache: bool = True,
+    since: Optional[int] = None,
 ) -> Optional[pd.DataFrame]:
+    """
+    since : timestamp en millisecondes (epoch ms). Si fourni, fetch les bougies à partir
+    de cette date au lieu des plus récentes. Le cache est automatiquement désactivé quand
+    since est fourni, pour éviter de servir des données de la mauvaise fenêtre temporelle.
+    """
     params = _get_data_params()
     tf = timeframe or params["timeframe"]
     lim = limit or params["candles_limit"]
+    effective_use_cache = use_cache and since is None
 
-    if use_cache:
+    if effective_use_cache:
         cached = _load_cache(symbol, tf)
         if cached is not None:
             log.info(f"{symbol} — chargé depuis le cache")
@@ -126,7 +137,7 @@ async def fetch_ohlcv_async(
     for attempt in range(1, params["max_retries"] + 1):
         try:
             log.info(f"{symbol} — fetch Binance (tentative {attempt}/{params['max_retries']})")
-            raw = await exchange.fetch_ohlcv(symbol, timeframe=tf, limit=lim)
+            raw = await exchange.fetch_ohlcv(symbol, timeframe=tf, limit=lim, since=since)
 
             if not raw:
                 log.warning(f"{symbol} — réponse vide")
@@ -145,7 +156,7 @@ async def fetch_ohlcv_async(
 
             df = _add_is_closed(df, tf)
 
-            if use_cache:
+            if effective_use_cache:
                 _save_cache(symbol, tf, df)
 
             log.info(
@@ -176,13 +187,14 @@ async def fetch_all_async(
     symbols: Optional[list] = None,
     timeframe: Optional[str] = None,
     use_cache: bool = True,
+    since: Optional[int] = None,
 ) -> dict:
     params = _get_data_params()
     syms = symbols if symbols is not None else params["watchlist"]
     tf = timeframe if timeframe is not None else params["timeframe"]
 
-    log.info(f"=== Début fetch batch async — {len(syms)} paires ===")
-    tasks = [fetch_ohlcv_async(exchange, symbol, tf, use_cache=use_cache) for symbol in syms]
+    log.info(f"=== Début fetch batch async — {len(syms)} paires ===" + (f" (depuis {since})" if since else ""))
+    tasks = [fetch_ohlcv_async(exchange, symbol, tf, use_cache=use_cache, since=since) for symbol in syms]
     results_list = await asyncio.gather(*tasks)
 
     results = {}
@@ -215,12 +227,23 @@ async def fetch_daily_all_async(
     exchange: ccxt_async.binance,
     symbols: Optional[list] = None,
     use_cache: bool = True,
+    since: Optional[int] = None,  # New optional timestamp parameter
 ) -> dict:
-    """Récupère les OHLCV en timeframe 1d pour toutes les paires."""
+    """Récupère les OHLCV en timeframe 1d pour toutes les paires, avec prise en compte du paramètre since si fourni."""
     params = _get_data_params()
     syms = symbols if symbols is not None else params["watchlist"]
     log.info(f"=== Début fetch daily async — {len(syms)} paires ===")
-    tasks = [fetch_ohlcv_async(exchange, symbol, timeframe="1d", limit=400, use_cache=use_cache) for symbol in syms]
+    tasks = [
+        fetch_ohlcv_async(
+            exchange,
+            symbol,
+            timeframe="1d",
+            limit=400,
+            use_cache=use_cache,
+            since=since,  # Forward the timestamp to the OHLCV fetcher
+        )
+        for symbol in syms
+    ]
     results_list = await asyncio.gather(*tasks)
 
     results = {}
@@ -229,6 +252,7 @@ async def fetch_daily_all_async(
             results[symbol] = df
     log.info(f"Fetch daily terminé : {len(results)} OK")
     return results
+
 
 # ─── Test standalone ──────────────────────────────────────────────────────────
 async def main_test():
