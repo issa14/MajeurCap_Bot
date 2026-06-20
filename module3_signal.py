@@ -247,13 +247,13 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
 
         confluences = check_confluences(df, fibo, structure, direction, config)
         score = compute_confluence_score(df, fibo, structure, direction, config)
-        if score >= threshold and score > best_confluence_count:
+        if len(confluences) >= threshold and len(confluences) > best_confluence_count:
             levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
             best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences,
                            "confluence_score": score,
                            "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"],
                            "adx": df.iloc[-1].get("adx", 0), **levels}
-            best_confluence_count = score
+            best_confluence_count = len(confluences)
 
     return best_signal
 
