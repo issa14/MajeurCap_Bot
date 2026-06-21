@@ -234,9 +234,12 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
     if not exit_reason and new_sl != pos["sl"]:
         auto_exec = config.get("execution", {}).get("auto_execute", False)
         if auto_exec:
+            # Quantité réelle restante sur l'exchange : si TP1 a déjà été touché (sortie
+            # partielle de 50%), il ne reste que 50% de la quantité d'origine en position.
+            remaining_qty = pos["quantity"] * 0.5 if partial_exit_done else pos["quantity"]
             res = await update_sl_order(
                 symbol=symbol,
-                quantity=pos["quantity"],
+                quantity=remaining_qty,
                 new_sl_price=new_sl,
                 direction=direction,
                 old_sl_order_id=pos.get("sl_order_id"),
@@ -247,6 +250,11 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
                 asyncio.create_task(send_telegram(f"🔄 {symbol} Trailing SL mis à jour : {new_sl}", config))
             else:
                 log.error(f"Échec mise à jour SL sur exchange pour {symbol}")
+                asyncio.create_task(send_telegram(
+                    f"🚨 URGENT {symbol} — Échec mise à jour Trailing SL sur l'exchange ! "
+                    f"La position peut être SANS stop-loss actif. Vérifier manuellement sur Binance.",
+                    config
+                ))
 
     pos["sl_price"] = pos["sl"] = new_sl
     pos["partial_exit"] = 1 if partial_exit_done else 0
