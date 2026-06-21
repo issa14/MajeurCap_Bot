@@ -70,13 +70,16 @@ def calculate_position_size(
     # Risque monétaire maximum sur ce trade
     risk_amount = capital * risk_per_trade_pct   # ex: 1000 * 0.01 = 10 USDT
 
-    # Taille de position futures = risque / (distance SL en % × prix × levier)
-    # Le levier amplifie l'exposition : avec levier 5, on contrôle 5× la valeur
-    # donc on a besoin de 5× moins d'unités pour le même risque nominal
+    # Taille de position futures = risque / (distance SL en % × prix)
+    # Le levier NE DOIT PAS réduire la quantité ici : la perte réelle en cas de SL touché
+    # dépend uniquement de (quantité × prix × distance SL en %), pas du levier. Le levier
+    # détermine seulement la MARGE nécessaire pour ouvrir cette quantité (notional / levier),
+    # pas le risque encouru. Cohérent avec backtest_multi.py qui multiplie pnl_pct par leverage.
     if sl_pct == 0:
         return 0.0
-    position_size = risk_amount / (sl_pct * entry_price * leverage)   # en unités (ex: BTC)
-    log.info(f"Position sizing: risk={risk_amount:.2f} USDT, sl={sl_pct*100:.2f}%, leverage={leverage}x → qty={position_size:.6f}")
+    position_size = risk_amount / (sl_pct * entry_price)   # en unités (ex: BTC)
+    required_margin = (position_size * entry_price) / leverage
+    log.info(f"Position sizing: risk={risk_amount:.2f} USDT, sl={sl_pct*100:.2f}%, leverage={leverage}x → qty={position_size:.6f}, marge requise≈{required_margin:.2f} USDT")
 
     # Vérifier l'exposition maximale (si dépassée, réduire)
     max_exposure_amount = capital * max_exposure_pct
