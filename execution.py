@@ -158,16 +158,17 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
         except Exception as tp1_error:
             log.warning(f"Échec placement TP1 ({tp1_error}) — surveillance logicielle active")
 
-        # 4. TP2 — TAKE_PROFIT_MARKET sur la totalité (ferme le reste)
+        # 4. TP2 — TAKE_PROFIT_MARKET sur les 50% restants (après sortie TP1)
         tp2_order = None
         try:
             tp2_price = signal["tp2"]
-            log.info(f"Placement TP2 TAKE_PROFIT_MARKET : stopPrice={tp2_price}, qty={quantity}")
+            qty_tp2 = float(exchange.amount_to_precision(symbol, quantity * 0.5))
+            log.info(f"Placement TP2 TAKE_PROFIT_MARKET : stopPrice={tp2_price}, qty={qty_tp2}")
             tp2_order = await exchange.create_order(
                 symbol=symbol,
                 type="take_profit_market",
                 side=sl_side,
-                amount=quantity,
+                amount=qty_tp2,
                 price=None,
                 params={
                     "stopPrice":  tp2_price,

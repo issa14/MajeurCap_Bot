@@ -260,8 +260,23 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
         pos["exit_price"] = exit_price
         pos["exit_date"] = str(after_entry.iloc[-1]["timestamp"])
         
-        pnl_usd = (exit_price - entry) * pos["quantity"] if direction == "LONG" else (entry - exit_price) * pos["quantity"]
-        pnl_pct = ((exit_price - entry) / entry * 100) if direction == "LONG" else ((entry - exit_price) / entry * 100)
+        # PnL pondéré : si une sortie partielle a eu lieu à TP1 (50% qty), on calcule
+        # le PnL réel = 50% du PnL au prix TP1 + 50% du PnL au prix de sortie final.
+        # Sinon (SL ou TP1 direct sans partial_exit), 100% au prix de sortie unique.
+        full_qty = pos["quantity"]
+        if pos.get("partial_exit") and exit_reason != "TP1":
+            half_qty = full_qty * 0.5
+            if direction == "LONG":
+                pnl_usd_tp1 = (tp1 - entry) * half_qty
+                pnl_usd_rest = (exit_price - entry) * half_qty
+            else:
+                pnl_usd_tp1 = (entry - tp1) * half_qty
+                pnl_usd_rest = (entry - exit_price) * half_qty
+            pnl_usd = pnl_usd_tp1 + pnl_usd_rest
+            pnl_pct = (pnl_usd / (entry * full_qty)) * 100 if entry * full_qty != 0 else 0
+        else:
+            pnl_usd = (exit_price - entry) * full_qty if direction == "LONG" else (entry - exit_price) * full_qty
+            pnl_pct = ((exit_price - entry) / entry * 100) if direction == "LONG" else ((entry - exit_price) / entry * 100)
         
         pos["pnl_usd"] = round(pnl_usd, 4)
         pos["pnl_pct"] = round(pnl_pct, 2)
