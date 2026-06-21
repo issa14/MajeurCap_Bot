@@ -235,7 +235,7 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
     spot_only = config.get("execution", {}).get("spot_only", False)
 
     best_signal = None
-    best_confluence_count = 0
+    best_score = -1.0
     for direction in ["long", "short"]:
         # En mode spot_only, les SHORT sont impossibles (pas de vente à découvert)
         if spot_only and direction == "short":
@@ -247,13 +247,16 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
 
         confluences = check_confluences(df, fibo, structure, direction, config)
         score = compute_confluence_score(df, fibo, structure, direction, config)
-        if len(confluences) >= threshold and len(confluences) > best_confluence_count:
+        # Seuil d'éligibilité minimum sur le compte BRUT (garde-fou indépendant du score),
+        # mais départage entre LONG et SHORT sur le score PONDÉRÉ (corrige le double-comptage
+        # de facteurs corrélés type EMA/KC, conforme à la docstring de compute_confluence_score).
+        if len(confluences) >= threshold and score > best_score:
             levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
             best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences,
                            "confluence_score": score,
                            "structure": structure, "fibo": fibo, "threshold": threshold, "atr": df.iloc[-1]["atr"],
                            "adx": df.iloc[-1].get("adx", 0), **levels}
-            best_confluence_count = len(confluences)
+            best_score = score
 
     return best_signal
 
