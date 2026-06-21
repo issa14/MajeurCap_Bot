@@ -216,6 +216,10 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
     min_conf = sig_cfg.get("min_confluences", 3)
     min_conf_no_str = sig_cfg.get("min_confluences_no_struct", 4)
     min_pivots = sig_cfg.get("min_pivots", 4)
+    # Filtre optionnel sur le score pondéré (en plus du compte brut). None = désactivé,
+    # comportement inchangé. Permet de tester le score comme critère de filtre à part entière,
+    # pas seulement comme départageur LONG/SHORT.
+    min_score = sig_cfg.get("min_score", None)
 
     if adx_required and df.iloc[-1].get("adx", 0) < adx_threshold: return None
     if daily_trend and daily_trend.get("trend") == "neutral": return None
@@ -241,16 +245,18 @@ def generate_signal(symbol: str, df: pd.DataFrame, config: dict, daily_trend: Op
         if spot_only and direction == "short":
             continue
 
-        if daily_trend:
+        if daily_trend and daily_trend.get("trend") != "ranging":
             if direction == "long" and daily_trend["trend"] != "bullish": continue
             if direction == "short" and daily_trend["trend"] != "bearish": continue
 
         confluences = check_confluences(df, fibo, structure, direction, config)
         score = compute_confluence_score(df, fibo, structure, direction, config)
-        # Seuil d'éligibilité minimum sur le compte BRUT (garde-fou indépendant du score),
-        # mais départage entre LONG et SHORT sur le score PONDÉRÉ (corrige le double-comptage
-        # de facteurs corrélés type EMA/KC, conforme à la docstring de compute_confluence_score).
-        if len(confluences) >= threshold and score > best_score:
+        # Seuil d'éligibilité sur le compte BRUT (garde-fou par défaut) ET, si min_score est
+        # configuré, sur le score PONDÉRÉ également (filtre additionnel optionnel pour tests
+        # comparatifs). Le départage entre LONG et SHORT reste toujours sur le score pondéré
+        # (corrige le double-comptage de facteurs corrélés type EMA/KC).
+        score_ok = (min_score is None) or (score >= min_score)
+        if len(confluences) >= threshold and score_ok and score > best_score:
             levels = compute_levels(df.iloc[-1]["close"], df.iloc[-1]["atr"], direction, config)
             best_signal = {"symbol": symbol, "direction": direction.upper(), "confluences": confluences,
                            "confluence_score": score,
