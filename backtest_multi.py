@@ -109,9 +109,14 @@ async def main():
     # Configurations to test: weighted score (real score filter) vs old raw count
     # score_2.5 utilise min_score (filtre réel sur compute_confluence_score) avec min_confluences
     # bas (1) pour ne pas filtrer prématurément sur le compte brut — comparaison honnête.
+    # noStruct_4 / noStruct_3.5 isolent min_confluences_no_struct seul (min_confluences=3 fixe,
+    # min_score=None fixe) — noStruct_4 = config de production actuelle, noStruct_3.5 = valeur
+    # testée dans les scénarios précédents.
     config_candidates = [
         ("score_2.5", 1, 1, 2.5),
         ("old_count_3", 3, 3.5, None),
+        ("noStruct_4", 3, 4, None),
+        ("noStruct_3.5", 3, 3.5, None),
     ]
 
     watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]

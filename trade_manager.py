@@ -424,7 +424,23 @@ async def open_position(signal: dict, config: dict) -> dict:
         log.warning(f"{symbol} — position déjà active en DB, insertion annulée (doublon évité)")
         return {"success": False, "reason": "position_already_active"}
 
-    db.insert_position(new_pos)
+    try:
+        db.insert_position(new_pos)
+    except Exception as db_error:
+        # Les ordres sont DÉJÀ actifs sur l'exchange à ce stade (si auto_exec=True) — la position
+        # devient orpheline pour le bot si on ne signale pas immédiatement ce cas. Alerte Telegram
+        # avec toutes les infos nécessaires à une réparation manuelle en DB.
+        log.error(f"{symbol} — ÉCHEC insertion DB après ouverture position : {db_error}")
+        asyncio.create_task(send_telegram(
+            f"🚨 URGENT {symbol} — Position ouverte sur l'exchange mais ÉCHEC d'enregistrement en DB !\n"
+            f"Direction: {signal['direction']} | Qty: {quantity} | Entry: {signal['entry']}\n"
+            f"SL: {signal['sl']} | TP1: {signal['tp1']} | TP2: {signal['tp2']}\n"
+            f"SL order: {sl_order_id} | TP1 order: {tp1_order_id} | TP2 order: {tp2_order_id}\n"
+            f"Cette position n'est PAS supervisée par le bot (pas de trailing, pas de détection "
+            f"de clôture). Réparation manuelle en DB nécessaire.",
+            config
+        ))
+        return {"success": False, "reason": "db_insert_failed_position_orphaned", "error": str(db_error)}
 
     log.info(f"Nouvelle position ouverte : {symbol} {signal['direction']} qty={quantity}")
     return {"success": True, "quantity": quantity}

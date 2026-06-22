@@ -229,6 +229,42 @@ def get_daily_trend_at_timestamp(symbol: str, timestamp, daily_data: dict, confi
             
     return symbol_trend
 
+
+
+def get_daily_structure_at_timestamp(symbol: str, timestamp, daily_data: dict, config: dict) -> dict:
+    """
+    Calcule la structure complète (zigzag, BOS/CHoCH, Fibonacci) sur le daily,
+    de manière causale : seules les bougies daily strictement antérieures au
+    timestamp 4h courant sont utilisées.
+
+    Réutilise compute_zigzag (ce module) et detect_structure /
+    compute_fibonacci_from_swings (module3_signal) — pas de duplication de logique,
+    juste appliqué à un dataframe daily au lieu du 4h.
+    """
+    empty_result = {
+        "structure": {"bos": None, "choch": None, "trend": "ranging", "last_high": None, "last_low": None, "pivots_count": 0},
+        "fibo": {},
+    }
+
+    if not daily_data or symbol not in daily_data:
+        return empty_result
+
+    df_daily = daily_data[symbol]
+    df_daily_sub = df_daily[df_daily["timestamp"] < timestamp].copy()
+    if len(df_daily_sub) < 50:
+        return empty_result
+
+    # Import local pour éviter une dépendance circulaire module2 <-> module3
+    from module3_signal import detect_structure, compute_fibonacci_from_swings
+
+    df_daily_sub = df_daily_sub.reset_index(drop=True)
+    df_daily_z = compute_zigzag(df_daily_sub, config)
+
+    structure = detect_structure(df_daily_z, config)
+    fibo = compute_fibonacci_from_swings(df_daily_z)
+
+    return {"structure": structure, "fibo": fibo}
+
 # ─── Batch ────────────────────────────────────────────────────────────────────
 def analyze_all(data: dict, config: dict, include_incomplete: bool = False, daily_data: Optional[dict] = None) -> dict:
     """Analyse toutes les paires avec injection de config."""
