@@ -106,18 +106,19 @@ async def main():
         ("historical", int((datetime.now(timezone.utc) - timedelta(days=395)).timestamp() * 1000)),
     ]
 
-    # Comparaison watchlist actuelle vs watchlist proposée — config old_count_3 uniquement
-    # (la config gagnante validée, pas besoin de refaire tous les scénarios).
-    # watchlist_current : ancienne watchlist utilisée dans les backtests précédents
-    # watchlist_proposed : nouvelle watchlist optimisée (VET/HYPE/ETH/ARB remplacés par DOGE/BNB,
-    #                      réduite à 6 paires pour meilleure qualité de signal et diversification)
+    # Config validée définitivement :
+    # - old_count_3 : config gagnante (min_confluences=3, min_score=None) — Sharpe 2.66 recent,
+    #   0.54 historical sur données juin 2026
+    # - noStruct_4 : config de production actuelle (min_confluences_no_struct=4) — confirmée
+    #   insensible vs 3.5, gardée pour reproductibilité
+    # Score pondéré (min_score) rejeté définitivement comme filtre d'entrée (Sharpe -1.06
+    # historical, PnL -285%) — reste uniquement utilisé pour départager LONG/SHORT (fix session 6)
     config_candidates = [
-        ("current_wl", 3, 3.5, None),
-        ("proposed_wl", 3, 3.5, None),
+        ("old_count_3", 3, 3.5, None),
+        ("noStruct_4", 3, 4, None),
     ]
 
-    watchlist_current  = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
-    watchlist_proposed = ["BTC/USDT", "SOL/USDT", "BNB/USDT", "LINK/USDT", "SUI/USDT", "DOGE/USDT"]
+    watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
 
     results = []
 
@@ -139,8 +140,7 @@ async def main():
                 "sl_atr_mult": 2.0,
                 "trailing_sl_enabled": False,
             }
-            wl = watchlist_proposed if cfg_name == "proposed_wl" else watchlist_current
-            trades_df = await run_single_backtest(params, symbols=wl, since=since_ts)
+            trades_df = await run_single_backtest(params, symbols=watchlist, since=since_ts)
             m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
             scenario_name = f"{cfg_name}_{case_name}"
             res_entry = {
