@@ -106,20 +106,18 @@ async def main():
         ("historical", int((datetime.now(timezone.utc) - timedelta(days=395)).timestamp() * 1000)),
     ]
 
-    # Configurations to test: weighted score (real score filter) vs old raw count
-    # score_2.5 utilise min_score (filtre réel sur compute_confluence_score) avec min_confluences
-    # bas (1) pour ne pas filtrer prématurément sur le compte brut — comparaison honnête.
-    # noStruct_4 / noStruct_3.5 isolent min_confluences_no_struct seul (min_confluences=3 fixe,
-    # min_score=None fixe) — noStruct_4 = config de production actuelle, noStruct_3.5 = valeur
-    # testée dans les scénarios précédents.
+    # Comparaison watchlist actuelle vs watchlist proposée — config old_count_3 uniquement
+    # (la config gagnante validée, pas besoin de refaire tous les scénarios).
+    # watchlist_current : ancienne watchlist utilisée dans les backtests précédents
+    # watchlist_proposed : nouvelle watchlist optimisée (VET/HYPE/ETH/ARB remplacés par DOGE/BNB,
+    #                      réduite à 6 paires pour meilleure qualité de signal et diversification)
     config_candidates = [
-        ("score_2.5", 1, 1, 2.5),
-        ("old_count_3", 3, 3.5, None),
-        ("noStruct_4", 3, 4, None),
-        ("noStruct_3.5", 3, 3.5, None),
+        ("current_wl", 3, 3.5, None),
+        ("proposed_wl", 3, 3.5, None),
     ]
 
-    watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
+    watchlist_current  = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
+    watchlist_proposed = ["BTC/USDT", "SOL/USDT", "BNB/USDT", "LINK/USDT", "SUI/USDT", "DOGE/USDT"]
 
     results = []
 
@@ -141,7 +139,8 @@ async def main():
                 "sl_atr_mult": 2.0,
                 "trailing_sl_enabled": False,
             }
-            trades_df = await run_single_backtest(params, symbols=watchlist, since=since_ts)
+            wl = watchlist_proposed if cfg_name == "proposed_wl" else watchlist_current
+            trades_df = await run_single_backtest(params, symbols=wl, since=since_ts)
             m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
             scenario_name = f"{cfg_name}_{case_name}"
             res_entry = {
