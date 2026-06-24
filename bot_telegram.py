@@ -15,7 +15,7 @@ sys.path.insert(0, ".")
 from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_all_async
 from module2_AT import analyze_all
 from module3_signal import scan_all
-from trade_manager import manage_positions, open_position
+from trade_manager import manage_positions, open_position, reconcile_positions_on_startup
 from config_loader import get_config, reload_config
 from database import db
 from logging.handlers import RotatingFileHandler
@@ -193,6 +193,12 @@ async def main():
     SIGNAL_SCAN_INTERVAL    = 900     # secondes — scan signaux (toutes les 15 min)
 
     last_signal_scan = 0.0            # force un scan immédiat au démarrage
+
+    # Réconciliation unique au démarrage : DB vs Binance
+    try:
+        await reconcile_positions_on_startup()
+    except Exception as e:
+        log.error(f"Erreur reconcile_on_startup : {e}", exc_info=True)
 
     while not stop_event.is_set():
         now = asyncio.get_event_loop().time()
