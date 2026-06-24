@@ -301,6 +301,13 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
     db.update_position(pos["id"], clean_updates)
     return pos
 
+def _normalize_symbol(symbol: str) -> str:
+    """Normalise un symbole CCXT futures vers le format DB.
+    Exemples : 'SUI/USDT:USDT' → 'SUI/USDT', 'BTC/USDT:USDT' → 'BTC/USDT'
+    """
+    return symbol.split(":")[0]
+
+
 async def reconcile_positions_on_startup() -> None:
     """
     Compare les positions actives en DB avec les positions réelles sur Binance.
@@ -308,7 +315,10 @@ async def reconcile_positions_on_startup() -> None:
 
     Cas traités :
     - Position active en DB mais absente sur Binance → marquer closed (SL/TP déclenché hors surveillance)
-    - Position sur Binance mais absente en DB → insérer en DB comme orpheline + alerter Telegram
+    - Position sur Binance mais absente en DB → alerter Telegram (sans insertion en DB)
+
+    Note : les symboles sont normalisés via _normalize_symbol() pour éviter les faux positifs
+    entre le format DB ('SUI/USDT') et le format CCXT futures ('SUI/USDT:USDT').
     """
     config = get_config()
     auto_exec = config.get("execution", {}).get("auto_execute", False)
@@ -318,24 +328,19 @@ async def reconcile_positions_on_startup() -> None:
 
     log.info("=== Réconciliation démarrage : DB vs Binance ===")
 
-    # 1. Positions actives en DB
+    # 1. Positions actives en DB (clé = symbol normalisé)
     db_positions = {p["symbol"]: p for p in db.get_active_positions()}
+    db_symbols_normalized = {_normalize_symbol(s): s for s in db_positions}
 
-    # 2. Positions réelles sur Binance
+    # 2. Positions réelles sur Binance (clé = symbol normalisé)
     exchange = await init_trading_exchange()
     try:
         raw_positions = await exchange.fetch_positions()
-        # Filtrer les positions avec une taille non nulle
-        binance_positions = {
-            p["symbol"].replace("/", ""): p
-            for p in raw_positions
-            if p.get("contracts") and float(p["contracts"]) != 0
-        }
-        # Reconstruire avec le format symbol CCXT (ex: "SOL/USDT")
-        binance_by_ccxt = {}
+        binance_by_normalized = {}
         for p in raw_positions:
             if p.get("contracts") and float(p["contracts"]) != 0:
-                binance_by_ccxt[p["symbol"]] = p
+                norm = _normalize_symbol(p["symbol"])
+                binance_by_normalized[norm] = p
     except Exception as e:
         log.error(f"reconcile_on_startup : impossible de récupérer les positions Binance ({e})")
         await exchange.close()
@@ -344,10 +349,11 @@ async def reconcile_positions_on_startup() -> None:
         await exchange.close()
 
     # 3. Cas A — Position active en DB mais absente sur Binance
-    for symbol, pos in db_positions.items():
-        if symbol not in binance_by_ccxt:
+    for norm_sym, db_sym in db_symbols_normalized.items():
+        if norm_sym not in binance_by_normalized:
+            pos = db_positions[db_sym]
             log.warning(
-                f"RECONCILE {symbol} — active en DB (id={pos['id']}) mais ABSENTE sur Binance. "
+                f"RECONCILE {db_sym} — active en DB (id={pos['id']}) mais ABSENTE sur Binance. "
                 f"Marquée closed (SL/TP probablement déclenché hors surveillance)."
             )
             db.update_position(pos["id"], {
@@ -356,48 +362,30 @@ async def reconcile_positions_on_startup() -> None:
                 "exit_date": datetime.now(timezone.utc).isoformat(),
             })
             await send_telegram(
-                f"⚠️ RECONCILE {symbol} — Position active en DB mais introuvable sur Binance.\n"
+                f"⚠️ RECONCILE {db_sym} — Position active en DB mais introuvable sur Binance.\n"
                 f"Marquée closed automatiquement (SL/TP déclenché hors surveillance du bot).\n"
                 f"Entry: {pos.get('entry_price')} | Direction: {pos.get('direction')}",
                 config
             )
 
-    # 4. Cas B — Position sur Binance mais absente en DB
-    for symbol, bpos in binance_by_ccxt.items():
-        if symbol not in db_positions:
+    # 4. Cas B — Position sur Binance mais absente en DB → alerte SANS insertion
+    # (pas d'insertion automatique pour éviter les doublons et les réouvertures en cascade)
+    for norm_sym, bpos in binance_by_normalized.items():
+        if norm_sym not in db_symbols_normalized:
             side = bpos.get("side", "")
             direction = "LONG" if side == "long" else "SHORT"
             entry_price = bpos.get("entryPrice") or bpos.get("info", {}).get("entryPrice", 0)
             contracts = float(bpos.get("contracts", 0))
+            raw_symbol = bpos.get("symbol", norm_sym)
             log.warning(
-                f"RECONCILE {symbol} — position ORPHELINE sur Binance "
-                f"({direction} qty={contracts} entry={entry_price}) absente de la DB."
+                f"RECONCILE {norm_sym} — position ORPHELINE sur Binance "
+                f"({direction} qty={contracts} entry={entry_price}) absente de la DB. "
+                f"Alerte envoyée — fermeture manuelle requise."
             )
-            # Insérer comme orpheline pour permettre le suivi manuel
-            try:
-                db.insert_position({
-                    "symbol": symbol,
-                    "direction": direction,
-                    "entry": float(entry_price),
-                    "sl": 0.0,       # inconnu — à surveiller manuellement
-                    "tp1": 0.0,
-                    "tp2": 0.0,
-                    "quantity": contracts,
-                    "entry_date": datetime.now(timezone.utc).isoformat(),
-                    "status": "active",
-                    "partial_exit": 0,
-                    "sl_order_id": None,
-                    "tp1_order_id": None,
-                    "tp2_order_id": None,
-                })
-                log.warning(f"RECONCILE {symbol} — position orpheline insérée en DB (SL/TP=0, surveillance manuelle requise).")
-            except Exception as db_err:
-                log.error(f"RECONCILE {symbol} — échec insertion DB : {db_err}")
-
             await send_telegram(
-                f"🚨 RECONCILE {symbol} — Position ORPHELINE détectée sur Binance !\n"
+                f"🚨 RECONCILE {norm_sym} — Position ORPHELINE détectée sur Binance !\n"
                 f"Direction: {direction} | Qty: {contracts} | Entry: {entry_price}\n"
-                f"SL/TP inconnus — surveillance manuelle requise. Position insérée en DB.",
+                f"⚠️ Non insérée en DB — fermer manuellement sur Binance.",
                 config
             )
 
