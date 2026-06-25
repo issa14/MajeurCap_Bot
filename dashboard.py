@@ -41,7 +41,7 @@ def compute_win_rate(closed_positions: list) -> tuple[float, int, int]:
     """Retourne (win_rate_pct, nb_wins, nb_total)."""
     if not closed_positions:
         return 0.0, 0, 0
-    wins  = sum(1 for p in closed_positions if p.get("pnl_pct", 0) > 0)
+    wins  = sum(1 for p in closed_positions if (p.get("pnl_pct") or 0) > 0)
     total = len(closed_positions)
     return (wins / total * 100), wins, total
 
