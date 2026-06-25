@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>/ — graphify tree viewer</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h1 {
+      margin: 20px 0 0 24px;
+      font-size: 2.2rem;
+      font-weight: bold;
+      color: #1e3a56;
+    }
+    .controls {
+      margin: 20px 0 15px 24px;
+    }
+    button {
+      margin-right: 10px;
+      padding: 8px 18px;
+      background: #007bff;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.2s ease-in-out;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button:active {
+      background: #004085;
+    }
+    #tree-container {
+      width: calc(100vw - 48px); /* Adjust for body margin/padding */
+      height: 85vh;
+      overflow: auto;
+      border-radius: 8px;
+      background: #fff;
+      margin-left: 24px;
+      margin-right: 24px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      border: 1px solid #ddd;
+    }
+    svg {
+      background: #fff;
+      border-radius: 8px;
+      display: block; /* Important for D3 */
+    }
+    .node circle {
+      stroke-width: 2.5px;
+    }
+    .node text { /* Base style for the <text> container */
+      font: 13px 'Segoe UI', sans-serif;
+      paint-order: stroke fill; /* Ensures text is readable over lines */
+      stroke: #fff; /* White halo */
+      stroke-width: 3px; /* Halo thickness */
+      stroke-linejoin: round;
+      stroke-opacity: 0.85; /* Halo opacity */
+    }
+    .link {
+      fill: none;
+      stroke-opacity: 0.7;
+      stroke-width: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h1>/ — Knowledge Graph</h1>
+  <div class="controls">
+    <button onclick="expandAll()">Expand All</button>
+    <button onclick="collapseAll()">Collapse All</button>
+    <button onclick="resetView()">Reset View</button>
+  </div>
+  <div id="tree-container">
+    <svg id="tree-svg" width="6000" height="8000"></svg>
+  </div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    const initialJsonData = {"name":"/","total_count":212,"children":[{"name":"backtest_multi.py","total_count":4,"children":[{"name":"Backtest multi-sc\u00e9narios - Analyse Comparative (Indicateurs & Confluences)","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"run_single_backtest()","total_count":1,"children":[]},{"name":"since : timestamp epoch ms optionnel. Si fourni, le backtest tourne sur une fen\u00ea","total_count":1,"children":[]}]},{"name":"bot_listener.py","total_count":4,"children":[{"name":"_get_tg_config()","total_count":1,"children":[]},{"name":"Boucle de polling pour \u00e9couter les messages Telegram.","total_count":1,"children":[]},{"name":"poll_updates()","total_count":1,"children":[]},{"name":"send_message()","total_count":1,"children":[]}]},{"name":"bot_telegram.py","total_count":6,"children":[{"name":"format_signal()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"Relit config.yaml uniquement si le fichier a \u00e9t\u00e9 modifi\u00e9 sur le disque.","total_count":1,"children":[]},{"name":"reload_config_if_changed()","total_count":1,"children":[]},{"name":"run_scan_cycle()","total_count":1,"children":[]},{"name":"Telegram Bot final (v2.1) - Async Optimized","total_count":1,"children":[]}]},{"name":"check_connection.py","total_count":1,"children":[{"name":"run_check()","total_count":1,"children":[]}]},{"name":"close_all_positions.py","total_count":1,"children":[{"name":"close_all()","total_count":1,"children":[]}]},{"name":"config_loader.py","total_count":5,"children":[{"name":"Charge la configuration depuis le fichier YAML.","total_count":1,"children":[]},{"name":"Force le rechargement de la configuration depuis le disque.","total_count":1,"children":[]},{"name":"get_config()","total_count":1,"children":[]},{"name":"load_config()","total_count":1,"children":[]},{"name":"reload_config()","total_count":1,"children":[]}]},{"name":"dashboard.py","total_count":14,"children":[{"name":"Calcule le PnL latent total en USD.","total_count":1,"children":[]},{"name":"compute_account_equity()","total_count":1,"children":[]},{"name":"compute_exposure()","total_count":1,"children":[]},{"name":"compute_unrealized_pnl()","total_count":1,"children":[]},{"name":"compute_win_rate()","total_count":1,"children":[]},{"name":"get_dashboard_telegram()","total_count":1,"children":[]},{"name":"get_dashboard_text()","total_count":1,"children":[]},{"name":"get_exchange()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"render_position_line()","total_count":1,"children":[]},{"name":"Retourne (exposure_usd, exposure_pct).","total_count":1,"children":[]},{"name":"Retourne (usdt_cash, total_equity_usd).     En Futures, balance['total']['USDT']","total_count":1,"children":[]},{"name":"Retourne (win_rate_pct, nb_wins, nb_total).","total_count":1,"children":[]},{"name":"Version Markdown pour Telegram (MarkdownV2 compatible).","total_count":1,"children":[]}]},{"name":"dashboard_api.py","total_count":9,"children":[{"name":"_fetch_with_retry()","total_count":1,"children":[]},{"name":"Dashboard API \u2014 expose les donn\u00e9es du bot en JSON pour le dashboard web local. L","total_count":1,"children":[]},{"name":"get_dashboard_data()","total_count":1,"children":[]},{"name":"get_recent_signals()","total_count":1,"children":[]},{"name":"get_trade_history()","total_count":1,"children":[]},{"name":"Retourne l'historique des positions ferm\u00e9es, plus r\u00e9centes en premier.","total_count":1,"children":[]},{"name":"Retourne l'\u00e9tat complet du bot : equity, positions, performance, risque.","total_count":1,"children":[]},{"name":"Retourne les derniers signaux d\u00e9tect\u00e9s, trad\u00e9s ou rejet\u00e9s.","total_count":1,"children":[]},{"name":"Retry simple pour contourner un bug connu CCXT/Binance Demo o\u00f9 la connexion","total_count":1,"children":[]}]},{"name":"database.py","total_count":22,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"._connect()","total_count":1,"children":[]},{"name":"._init_db()","total_count":1,"children":[]},{"name":".get_active_positions()","total_count":1,"children":[]},{"name":".get_all_positions()","total_count":1,"children":[]},{"name":".get_realized_pnl_today()","total_count":1,"children":[]},{"name":".get_recent_signals()","total_count":1,"children":[]},{"name":".get_signal_cooldowns()","total_count":1,"children":[]},{"name":".insert_position()","total_count":1,"children":[]},{"name":".insert_signal_log()","total_count":1,"children":[]},{"name":".update_position()","total_count":1,"children":[]},{"name":"Calcule la somme des PnL r\u00e9alis\u00e9s (%) de la journ\u00e9e en pond\u00e9rant par le capital.","total_count":1,"children":[]},{"name":"Charge tous les cooldowns depuis la DB.","total_count":1,"children":[]},{"name":"DatabaseManager","total_count":1,"children":[]},{"name":"Enregistre un signal d\u00e9tect\u00e9 (trad\u00e9 ou rejet\u00e9) pour l'historique/dashboard.","total_count":1,"children":[]},{"name":"Helper pour la connexion SQLite.","total_count":1,"children":[]},{"name":"Initialise la table positions si elle n'existe pas.","total_count":1,"children":[]},{"name":"Ins\u00e8re une nouvelle position et retourne son ID.","total_count":1,"children":[]},{"name":"Met \u00e0 jour une position existante en filtrant l'ID et les alias.","total_count":1,"children":[]},{"name":"Retourne absolument toutes les positions (historique inclus).","total_count":1,"children":[]},{"name":"Retourne la liste des positions non cl\u00f4tur\u00e9es.","total_count":1,"children":[]},{"name":"Retourne les N derniers signaux d\u00e9tect\u00e9s (trad\u00e9s ou non).","total_count":1,"children":[]}]},{"name":"execution.py","total_count":10,"children":[{"name":"_get_binance_params()","total_count":1,"children":[]},{"name":"Annule l'ancien stop-loss et en place un nouveau STOP_MARKET.     Utilise un blo","total_count":1,"children":[]},{"name":"D\u00e9finit le levier pour un symbole avant d'ouvrir une position.","total_count":1,"children":[]},{"name":"execute_signal()","total_count":1,"children":[]},{"name":"init_trading_exchange()","total_count":1,"children":[]},{"name":"Initialise l'exchange pour le trading futures en mode DEMO Binance.","total_count":1,"children":[]},{"name":"Module d'ex\u00e9cution \u2014 Futures Demo Trading (Binance) Utilise STOP_MARKET pour le","total_count":1,"children":[]},{"name":"Ouvre une position futures (LONG ou SHORT) et place SL + TP1 + TP2 sur l'exchang","total_count":1,"children":[]},{"name":"set_leverage()","total_count":1,"children":[]},{"name":"update_sl_order()","total_count":1,"children":[]}]},{"name":"GEMINI.md","total_count":13,"children":[{"name":"Building and Running","total_count":1,"children":[]},{"name":"Development Conventions","total_count":1,"children":[]},{"name":"Directory Structure","total_count":1,"children":[]},{"name":"Dpsk - Crypto Trading Bot (Production Ready)","total_count":1,"children":[]},{"name":"GEMINI.md","total_count":1,"children":[]},{"name":"Installation","total_count":1,"children":[]},{"name":"Phase 5: Technical Debt, Stability & Final Audit (DONE)","total_count":1,"children":[]},{"name":"Phase 6: Precision & Resilience (DONE)","total_count":1,"children":[]},{"name":"Prerequisites","total_count":1,"children":[]},{"name":"Project Overview","total_count":1,"children":[]},{"name":"Roadmap Status (Updated)","total_count":1,"children":[]},{"name":"Running in Production (Linux/Systemd)","total_count":1,"children":[]},{"name":"Running the Bot (Development)","total_count":1,"children":[]}]},{"name":"init_equity.py","total_count":1,"children":[{"name":"initialize()","total_count":1,"children":[]}]},{"name":"main.py","total_count":12,"children":[{"name":"DPSK - Crypto Trading Bot Point d'entr\u00e9e principal (CLI)","total_count":1,"children":[]},{"name":"Lance le backtest multi-param\u00e8tres.","total_count":1,"children":[]},{"name":"Lance le listener de commandes Telegram.","total_count":1,"children":[]},{"name":"Lance simultan\u00e9ment le bot de trading et le listener Telegram.","total_count":1,"children":[]},{"name":"Lance une it\u00e9ration du bot de trading.","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"run_all()","total_count":1,"children":[]},{"name":"run_backtest()","total_count":1,"children":[]},{"name":"run_check()","total_count":1,"children":[]},{"name":"run_listener()","total_count":1,"children":[]},{"name":"run_live()","total_count":1,"children":[]},{"name":"V\u00e9rifie la connexion \u00e0 l'exchange.","total_count":1,"children":[]}]},{"name":"metrics.py","total_count":2,"children":[{"name":"Calcule les m\u00e9triques de performance \u00e0 partir d'un DataFrame de trades.     Pren","total_count":1,"children":[]},{"name":"compute_metrics()","total_count":1,"children":[]}]},{"name":"module1_data_v3.py","total_count":17,"children":[{"name":"_add_is_closed()","total_count":1,"children":[]},{"name":"_cache_is_valid()","total_count":1,"children":[]},{"name":"_cache_path()","total_count":1,"children":[]},{"name":"_get_data_params()","total_count":1,"children":[]},{"name":"_load_cache()","total_count":1,"children":[]},{"name":"_save_cache()","total_count":1,"children":[]},{"name":"_timeframe_to_timedelta()","total_count":1,"children":[]},{"name":"Exchange public (sans auth) avec chargement des march\u00e9s.     defaultType: 'futur","total_count":1,"children":[]},{"name":"fetch_all_async()","total_count":1,"children":[]},{"name":"fetch_daily_all_async()","total_count":1,"children":[]},{"name":"fetch_ohlcv_async()","total_count":1,"children":[]},{"name":"init_exchange_async()","total_count":1,"children":[]},{"name":"main_test()","total_count":1,"children":[]},{"name":"Module 1 \u2014 Data Layer v3 (async + is_closed + config YAML + daily)","total_count":1,"children":[]},{"name":"R\u00e9cup\u00e8re les OHLCV en timeframe 1d pour toutes les paires, avec prise en compte","total_count":1,"children":[]},{"name":"since : timestamp en millisecondes (epoch ms). Si fourni, fetch les bougies \u00e0 pa","total_count":1,"children":[]},{"name":"summarize()","total_count":1,"children":[]}]},{"name":"module2_AT.py","total_count":14,"children":[{"name":"Analyse toutes les paires avec injection de config.","total_count":1,"children":[]},{"name":"analyze_all()","total_count":1,"children":[]},{"name":"Calcule la structure compl\u00e8te (zigzag, BOS/CHoCH, Fibonacci) sur le daily,     d","total_count":1,"children":[]},{"name":"Calcule le zigzag de mani\u00e8re causale.     Un pivot \u00e0 l'index 'i' est identifi\u00e9 \u00e0","total_count":1,"children":[]},{"name":"Calcule les indicateurs en utilisant l'objet config inject\u00e9.","total_count":1,"children":[]},{"name":"clean_ohlcv()","total_count":1,"children":[]},{"name":"compute_daily_trend()","total_count":1,"children":[]},{"name":"compute_indicators()","total_count":1,"children":[]},{"name":"compute_zigzag()","total_count":1,"children":[]},{"name":"D\u00e9termine la tendance journali\u00e8re.","total_count":1,"children":[]},{"name":"get_daily_structure_at_timestamp()","total_count":1,"children":[]},{"name":"get_daily_trend_at_timestamp()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"Module 2 \u2014 Analyse technique v4 (Injection de d\u00e9pendances)","total_count":1,"children":[]}]},{"name":"module3_signal.py","total_count":11,"children":[{"name":"check_confluences()","total_count":1,"children":[]},{"name":"compute_confluence_score()","total_count":1,"children":[]},{"name":"compute_fibonacci_from_swings()","total_count":1,"children":[]},{"name":"compute_levels()","total_count":1,"children":[]},{"name":"detect_structure()","total_count":1,"children":[]},{"name":"generate_signal()","total_count":1,"children":[]},{"name":"generate_signal_mtf()","total_count":1,"children":[]},{"name":"Module 3 \u2014 D\u00e9tection signal v6 (Injection de d\u00e9pendances)","total_count":1,"children":[]},{"name":"scan_all()","total_count":1,"children":[]},{"name":"Score pond\u00e9r\u00e9 des confluences, utilis\u00e9 pour la d\u00e9cision de seuil (generate_signa","total_count":1,"children":[]},{"name":"Variante multi-timeframe de generate_signal() :     - Structure (BOS/CHoCH) et F","total_count":1,"children":[]}]},{"name":"module4_backtest.py","total_count":4,"children":[{"name":"Module 4 \u2014 Backtest v2 (gestion de position corrig\u00e9e)","total_count":1,"children":[]},{"name":"Parcourt les bougies futures jusqu'\u00e0 toucher SL, TP1 ou TP2.     Inclut les frai","total_count":1,"children":[]},{"name":"run_backtest()","total_count":1,"children":[]},{"name":"simulate_trade()","total_count":1,"children":[]}]},{"name":"README.md","total_count":2,"children":[{"name":"MajeurCap_Bot","total_count":1,"children":[]},{"name":"README.md","total_count":1,"children":[]}]},{"name":"risk_manager.py","total_count":7,"children":[{"name":"calculate_position_size()","total_count":1,"children":[]},{"name":"can_open_position()","total_count":1,"children":[]},{"name":"get_active_positions_count()","total_count":1,"children":[]},{"name":"get_current_exposure_pct()","total_count":1,"children":[]},{"name":"Retourne la quantit\u00e9 \u00e0 acheter/vendre (en unit\u00e9s de base) pour respecter le risq","total_count":1,"children":[]},{"name":"Risk Manager (v1) Calcule la taille de position en fonction du risque d\u00e9fini dan","total_count":1,"children":[]},{"name":"V\u00e9rifie si on peut ouvrir une nouvelle position (nombre max).","total_count":1,"children":[]}]},{"name":"telegram_utils.py","total_count":2,"children":[{"name":"Envoi centralis\u00e9 de messages Telegram.","total_count":1,"children":[]},{"name":"send_telegram()","total_count":1,"children":[]}]},{"name":"test_indicators.py","total_count":6,"children":[{"name":".create_mock_ohlcv()","total_count":1,"children":[]},{"name":".test_clean_ohlcv()","total_count":1,"children":[]},{"name":".test_compute_daily_trend()","total_count":1,"children":[]},{"name":".test_compute_indicators()","total_count":1,"children":[]},{"name":"Creates a minimal OHLCV DataFrame.","total_count":1,"children":[]},{"name":"TestIndicators","total_count":1,"children":[]}]},{"name":"test_integration.py","total_count":6,"children":[{"name":".asyncSetUp()","total_count":1,"children":[]},{"name":".asyncTearDown()","total_count":1,"children":[]},{"name":".create_mock_data()","total_count":1,"children":[]},{"name":".test_full_scan_loop()","total_count":1,"children":[]},{"name":"Creates mock OHLCV data that will trigger a LONG signal.","total_count":1,"children":[]},{"name":"TestIntegrationBot","total_count":1,"children":[]}]},{"name":"test_signal_generation.py","total_count":16,"children":[{"name":".create_mock_df()","total_count":1,"children":[]},{"name":".setUp()","total_count":1,"children":[]},{"name":".test_check_confluences_long()","total_count":1,"children":[]},{"name":".test_compute_zigzag()","total_count":1,"children":[]},{"name":".test_detect_structure_bearish()","total_count":1,"children":[]},{"name":".test_detect_structure_bullish()","total_count":1,"children":[]},{"name":".test_fibonacci_calculation()","total_count":1,"children":[]},{"name":".test_generate_signal_integration()","total_count":1,"children":[]},{"name":"Creates a mock DataFrame with necessary columns for module3.","total_count":1,"children":[]},{"name":"Test bearish structure detection (LH, LL).","total_count":1,"children":[]},{"name":"Test bullish structure detection (HH, HL).","total_count":1,"children":[]},{"name":"Test confluence detection for a LONG signal.","total_count":1,"children":[]},{"name":"Test Fibonacci level calculations.","total_count":1,"children":[]},{"name":"Test if zigzag correctly identifies peaks and valleys.","total_count":1,"children":[]},{"name":"Test the end-to-end signal generation with a mock scenario.","total_count":1,"children":[]},{"name":"TestSignalGeneration","total_count":1,"children":[]}]},{"name":"test_trailing_sl.py","total_count":7,"children":[{"name":".close()","total_count":1,"children":[]},{"name":".test_trailing_sl_logic()","total_count":1,"children":[]},{"name":"mock_compute_indicators()","total_count":1,"children":[]},{"name":"mock_fetch_all_async()","total_count":1,"children":[]},{"name":"mock_init_exchange_async()","total_count":1,"children":[]},{"name":"MockExchange","total_count":1,"children":[]},{"name":"TestTrailingSL","total_count":1,"children":[]}]},{"name":"trade_manager.py","total_count":15,"children":[{"name":"_normalize_symbol()","total_count":1,"children":[]},{"name":"Annule tous les ordres ouverts li\u00e9s \u00e0 une position sur l'exchange (SL, TP1, TP2)","total_count":1,"children":[]},{"name":"cancel_exchange_orders()","total_count":1,"children":[]},{"name":"Charge les positions actives depuis SQLite.","total_count":1,"children":[]},{"name":"check_circuit_breaker()","total_count":1,"children":[]},{"name":"check_position()","total_count":1,"children":[]},{"name":"Compare les positions actives en DB avec les positions r\u00e9elles sur Binance.","total_count":1,"children":[]},{"name":"load_positions()","total_count":1,"children":[]},{"name":"manage_positions()","total_count":1,"children":[]},{"name":"migrate_json_to_sqlite()","total_count":1,"children":[]},{"name":"Normalise un symbole CCXT futures vers le format DB.     Exemples : 'SUI/USDT:US","total_count":1,"children":[]},{"name":"open_position()","total_count":1,"children":[]},{"name":"reconcile_positions_on_startup()","total_count":1,"children":[]},{"name":"Retourne True si le bot est bloqu\u00e9 (emergency stop).","total_count":1,"children":[]},{"name":"Trade Manager v2.0 (avec Risk Manager + Ex\u00e9cution Futures Demo)","total_count":1,"children":[]}]},{"name":"check_balance.py","total_count":1,"children":[]}]};
+
+    function transformData(jsonData) {
+        // Helper function to recursively build the children structure
+        function processNode(node, parentL1StageName) {
+            let displayName = node.name;
+            // Append total_count if it exists and is not already in the name
+            if (node.total_count !== undefined) {
+                if (!/\(Total Count: \d+\)$/.test(displayName)) {
+                    displayName += ` (Total Count: ${node.total_count})`;
+                }
+            }
+
+            const newNode = { name: displayName };
+
+            if (parentL1StageName === "Root") {
+                 newNode.originalStageName = node.name;
+            } else {
+                newNode.originalStageName = parentL1StageName;
+            }
+
+            if (node.children && node.children.length > 0) {
+                const stageNameToPass = (parentL1StageName === "Root") ? node.name : parentL1StageName;
+                newNode.children = node.children.map(child => processNode(child, stageNameToPass));
+            }
+
+            return newNode;
+        }
+
+        let rootDisplayName = jsonData.name;
+        if (jsonData.total_count !== undefined && !/\(Total Count: \d+\)$/.test(rootDisplayName)) {
+            rootDisplayName += ` (Total Count: ${jsonData.total_count})`;
+        }
+
+        return {
+            name: rootDisplayName,
+            originalStageName: "Root",
+            children: (jsonData.children || []).map(child => processNode(child, "Root"))
+        };
+    }
+
+    const treeData = transformData(initialJsonData);
+
+    // Auto-populated phaseColors: every depth-1 child of the root gets
+    // a stable colour from a bigger palette so all top-level dirs are
+    // distinguishable.
+    const PALETTE = [
+      ["#3498DB","#2980B9","#AED6F1"], ["#2ECC71","#27AE60","#A9DFBF"],
+      ["#E74C3C","#C0392B","#F5B7B1"], ["#9B59B6","#8E44AD","#D7BDE2"],
+      ["#F39C12","#D68910","#FAD7A0"], ["#1ABC9C","#117864","#A2D9CE"],
+      ["#34495E","#1B2631","#ABB2B9"], ["#E67E22","#BA4A00","#F5CBA7"],
+      ["#16A085","#0E6655","#A2D9CE"], ["#D35400","#A04000","#EDBB99"],
+      ["#7F8C8D","#566573","#D5DBDB"], ["#C0392B","#7B241C","#F5B7B1"],
+      ["#2E86C1","#1B4F72","#A9CCE3"], ["#28B463","#196F3D","#A9DFBF"],
+      ["#AF7AC5","#6C3483","#D2B4DE"],
+    ];
+    const phaseColors = { "Root": { fill: "#4A4A4A", stroke: "#333333", collapsedFill: "#6C757D" },
+                          "Default": { fill: "#BDC3C7", stroke: "#95A5A6", collapsedFill: "#ECF0F1" } };
+    (initialJsonData.children || []).forEach((c, i) => {
+      const pal = PALETTE[i % PALETTE.length];
+      phaseColors[c.name] = { fill: pal[0], stroke: pal[1], collapsedFill: pal[2] };
+    });
+
+    const levelSpecificPalettes = {
+      0: { fill: "#4A4A4A", stroke: "#333333", collapsedFill: "#6C757D" },
+      2: { fill: "#6ab04c", stroke: "#508a38", collapsedFill: "#a3d391" },
+      3: { fill: "#f0932b", stroke: "#d0730f", collapsedFill: "#f6c07e" },
+      4: { fill: "#be2edd", stroke: "#a01cb3", collapsedFill: "#e08bf2" },
+      5: { fill: "#00a8ff", stroke: "#007ac1", collapsedFill: "#74d2ff" },
+      6: { fill: "#e55039", stroke: "#c23620", collapsedFill: "#f09a8d" },
+      default: { fill: "#747d8c", stroke: "#57606f", collapsedFill: "#a4b0be" }
+    };
+
+    const svgElement = d3.select("#tree-svg");
+    const initialSvgWidth = +svgElement.attr("width");
+    const initialSvgHeight = +svgElement.attr("height");
+    const margin = { top: 40, right: 120, bottom: 80, left: 450 };
+    let width = initialSvgWidth - margin.left - margin.right;
+    let height = initialSvgHeight - margin.top - margin.bottom;
+    const duration = 500;
+    let nodeCounter = 0;
+    const g = svgElement.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+    const treemap = d3.tree().nodeSize([40, 0]);
+    let rootNode = d3.hierarchy(treeData, d => d.children);
+    rootNode.x0 = 0;
+    rootNode.y0 = 0;
+
+    if (rootNode.children) {
+      rootNode.children.forEach(d_child => {
+        if (d_child.children) { collapseBranch(d_child); }
+      });
+    }
+    updateTree(rootNode);
+
+    function collapseBranch(d) { if (d.children) { d._children = d.children; d._children.forEach(collapseBranch); d.children = null; } }
+    function expandBranch(d) { if (d._children) { d.children = d._children; d._children = null; } if (d.children) { d.children.forEach(expandBranch); } }
+    window.expandAll = () => { expandBranch(rootNode); updateTree(rootNode); };
+    window.collapseAll = () => { if (rootNode.children) { rootNode.children.forEach(collapseBranch); } updateTree(rootNode); };
+    window.resetView = () => { if (rootNode.children) { rootNode.children.forEach(d_child => { if (d_child.children || d_child._children) { collapseBranch(d_child); } }); } if (rootNode._children && !rootNode.children) { rootNode.children = rootNode._children; rootNode._children = null; } updateTree(rootNode); };
+
+    function updateTree(source) {
+      const treeLayoutData = treemap(rootNode);
+      let nodes = treeLayoutData.descendants();
+      let links = treeLayoutData.descendants().slice(1);
+
+      let minX = 0;
+      let maxX = 0;
+      if (nodes.length > 0) {
+        minX = d3.min(nodes, d => d.x);
+        maxX = d3.max(nodes, d => d.x);
+      }
+
+      let neededHeight = Math.max(initialSvgHeight, maxX - minX + margin.top + margin.bottom + 100);
+      svgElement.transition().duration(duration / 2).attr("height", neededHeight);
+      g.transition().duration(duration / 2).attr("transform", `translate(${margin.left},${margin.top - minX + 40})`);
+
+      nodes.forEach(d => { d.y = d.depth * 400; }); // Adjust horizontal separation if needed
+
+      const node = g.selectAll('g.node').data(nodes, d => d.id || (d.id = ++nodeCounter));
+      const nodeEnter = node.enter().append('g')
+        .attr('class', d => "node" + (d.children || d._children ? " node--internal" : " node--leaf") + (d._children ? " _children" : ""))
+        .attr('transform', d => `translate(${source.y0},${source.x0})`)
+        .on('click', (event, d) => { if (d.children) { d._children = d.children; d.children = null; } else if (d._children) { d.children = d._children; d._children = null; } updateTree(d); })
+        .style('cursor', d => (d.children || d._children) ? 'pointer' : 'default');
+
+      nodeEnter.append('circle').attr('r', 1e-6);
+
+      nodeEnter.append('text')
+        .attr('dy', '.35em')
+        .attr('x', d => d.children || d._children ? -14 : 14)
+        .attr('text-anchor', d => d.children || d._children ? 'end' : 'start')
+        .style("fill-opacity", 1e-6)
+        .call(wrapText, 380);
+
+      const nodeUpdate = nodeEnter.merge(node);
+      nodeUpdate.transition().duration(duration)
+        .attr('transform', d => `translate(${d.y},${d.x})`)
+        .attr('class', d => "node" + (d.children ? " node--internal" : " node--leaf") + (d._children ? " node--internal _children" : ""));
+
+      nodeUpdate.select('circle').attr('r', 8.5)
+        .style('fill', d => {
+            let palette;
+            if (d.depth === 0) {
+                palette = levelSpecificPalettes[0];
+            } else if (d.depth === 1) {
+                palette = phaseColors[d.data.originalStageName] || phaseColors.Default;
+            } else {
+                palette = levelSpecificPalettes[d.depth] || levelSpecificPalettes.default;
+            }
+            if (d._children) return palette.collapsedFill;
+            if (d.children) return palette.fill;
+            return "#fff";
+        })
+        .style('stroke', d => {
+            let palette;
+            if (d.depth === 0) {
+                palette = levelSpecificPalettes[0];
+            } else if (d.depth === 1) {
+                palette = phaseColors[d.data.originalStageName] || phaseColors.Default;
+            } else {
+                palette = levelSpecificPalettes[d.depth] || levelSpecificPalettes.default;
+            }
+            return palette.stroke;
+        });
+      nodeUpdate.select('text').style("fill-opacity", 1).call(wrapText, 380);
+
+      const nodeExit = node.exit().transition().duration(duration).attr('transform', d => `translate(${source.y},${source.x})`).remove();
+      nodeExit.select('circle').attr('r', 1e-6);
+      nodeExit.select('text').style('fill-opacity', 1e-6);
+
+      const link = g.selectAll('path.link').data(links, d => d.id);
+      const linkEnter = link.enter().insert('path', "g").attr('class', 'link').attr('d', d => { const o = { x: source.x0, y: source.y0 }; return diagonal(o, o); });
+
+      linkEnter.merge(link).transition().duration(duration).attr('d', d => diagonal(d, d.parent))
+        .style('stroke', d => {
+            const sourceNode = d.parent;
+            if (!sourceNode) return phaseColors.Default.stroke;
+            const l1AncestorName = sourceNode.data.originalStageName;
+            const colorPalette = phaseColors[l1AncestorName] || phaseColors.Default;
+            return colorPalette.stroke;
+        });
+      link.exit().transition().duration(duration).attr('d', d => { const o = { x: source.x, y: source.y }; return diagonal(o, o); }).remove();
+      nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+    }
+
+    function diagonal(s, d) { return `M ${s.y} ${s.x} C ${(s.y + d.y) / 2} ${s.x}, ${(s.y + d.y) / 2} ${d.x}, ${d.y} ${d.x}`; }
+
+    function wrapText(textElements, maxWidth) {
+        const textPartColors = {
+            name: '#343a40',
+            count: '#0056b3'
+        };
+        const countRegex = /(\s\(Total Count: \d+\))$/;
+
+        textElements.each(function () {
+            const textD3 = d3.select(this);
+            const originalNodeText = textD3.datum().data.name;
+            const x = parseFloat(textD3.attr("x") || 0);
+            const initialDy = textD3.attr("dy");
+            const textAnchor = textD3.attr("text-anchor");
+            const lineHeight = 1.1;
+
+            textD3.text(null);
+
+            let namePart = originalNodeText;
+            let countPartText = "";
+
+            const countMatch = originalNodeText.match(countRegex);
+            if (countMatch && originalNodeText.endsWith(countMatch[0])) {
+                namePart = originalNodeText.substring(0, originalNodeText.length - countMatch[0].length).trim();
+                countPartText = countMatch[0].trim();
+            }
+
+            const tokens = [];
+            namePart.split(/\s+/).filter(Boolean).forEach(word => {
+                tokens.push({ text: word, type: 'name' });
+            });
+            if (countPartText) {
+                tokens.push({ text: countPartText, type: 'count' });
+            }
+
+            if (tokens.length === 0 && originalNodeText) {
+                tokens.push({ text: originalNodeText, type: 'name' });
+            }
+
+            let currentTspan = textD3.append("tspan").attr("x", x).attr("dy", initialDy);
+            if (textAnchor === "end") currentTspan.attr("text-anchor", "end");
+
+            let lineTokens = [];
+
+            for (let i = 0; i < tokens.length; i++) {
+                const tokenObj = tokens[i];
+
+                lineTokens.push(tokenObj);
+                currentTspan.text(lineTokens.map(t => t.text).join(" "));
+
+                if (currentTspan.node().getComputedTextLength() > maxWidth && lineTokens.length > 1) {
+                    lineTokens.pop();
+
+                    currentTspan.text(null);
+                    lineTokens.forEach((prevToken, idx) => {
+                        currentTspan.append("tspan")
+                            .text((idx > 0 ? " " : "") + prevToken.text)
+                            .style("fill", textPartColors[prevToken.type] || textPartColors.name)
+                            .style("font-weight", prevToken.type === 'count' ? "bold" : "normal");
+                    });
+
+                    lineTokens = [tokenObj];
+                    currentTspan = textD3.append("tspan").attr("x", x).attr("dy", lineHeight + "em");
+                    if (textAnchor === "end") currentTspan.attr("text-anchor", "end");
+                }
+            }
+
+            currentTspan.text(null);
+            lineTokens.forEach((token, idx) => {
+                currentTspan.append("tspan")
+                    .text((idx > 0 ? " " : "") + token.text)
+                    .style("fill", textPartColors[token.type] || textPartColors.name)
+                    .style("font-weight", token.type === 'count' ? "bold" : "normal");
+            });
+
+            if (textD3.selectAll("tspan > tspan").empty() && textD3.select("tspan").text().length === 0 && originalNodeText) {
+                let t = textD3.select("tspan");
+                let displayText = originalNodeText;
+                t.text(displayText).style("fill", textPartColors.name);
+                if (t.node() && t.node().getComputedTextLength() > maxWidth && displayText.length > 20) {
+                    let estimatedChars = Math.floor(maxWidth / (t.node().getComputedTextLength()/displayText.length) );
+                    displayText = displayText.substring(0, Math.max(0, estimatedChars - 3)) + "...";
+                    t.text(displayText);
+                }
+            }
+        });
+    }
+  </script>
+</body>
+</html>

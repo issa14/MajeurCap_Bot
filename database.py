@@ -141,6 +141,7 @@ class DatabaseManager:
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
+    def update_signal_cooldown(self, symbol: str, last_sent_at: datetime) -> None:
         """Met à jour ou insère un cooldown pour un symbole."""
         with self._connect() as conn:
             cursor = conn.cursor()
