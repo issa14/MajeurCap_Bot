@@ -343,7 +343,7 @@ async def reconcile_positions_on_startup() -> None:
                 binance_by_normalized[norm] = p
     except Exception as e:
         log.error(f"reconcile_on_startup : impossible de récupérer les positions Binance ({e})")
-        await exchange.close()
+        # await exchange.close()  # Redundant; handled in finally
         return
     finally:
         await exchange.close()

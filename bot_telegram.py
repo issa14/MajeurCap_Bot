@@ -224,7 +224,15 @@ async def main():
                 break
             await asyncio.sleep(1)
 
-    log.info("Signal d'arrêt reçu — arrêt propre du bot après le cycle en cours.")
+        log.info("Signal d'arrêt reçu — arrêt propre du bot après le cycle en cours.")
+
+    # Cleanup : attendre les tasks asyncio pendantes (create_task fire-and-forget)
+    # pour éviter les "Unclosed client session" sur les sessions aiohttp.
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        log.info(f"Attente de {len(pending)} task(s) pendante(s) avant arrêt...")
+        await asyncio.gather(*pending, return_exceptions=True)
+    log.info("Arrêt propre terminé.")
 
 if __name__ == "__main__":
     asyncio.run(main())
