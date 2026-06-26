@@ -129,14 +129,18 @@ async def get_dashboard_data():
             )
             sl_dist = abs(price - sl) / price * 100 if price > 0 else 0.0
             positions_out.append({
-                "symbol": sym,
-                "direction": pos["direction"],
-                "entry": entry,
-                "current_price": price,
-                "pnl_pct": round(pnl_pct, 2),
-                "sl_distance_pct": round(sl_dist, 2),
-                "sl_warning": sl_dist < 1.0,
-            })
+                    "symbol": sym,
+                    "direction": pos["direction"],
+                    "entry": entry,
+                    "current_quantity": pos.get("current_quantity") or pos.get("quantity"),
+                    "tp1_status": pos.get("tp1_status", "PENDING"),
+                    "tp2_status": pos.get("tp2_status", "PENDING"),
+                    "partial_exit": bool(pos.get("partial_exit")),
+                    "current_price": price,
+                    "pnl_pct": round(pnl_pct, 2),
+                    "sl_distance_pct": round(sl_dist, 2),
+                    "sl_warning": sl_dist < 1.0,
+                })
 
         return {
             "status": "HALTED" if is_breached else "OPERATIONAL",

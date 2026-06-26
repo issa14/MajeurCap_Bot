@@ -50,7 +50,7 @@ def compute_unrealized_pnl(active_positions: dict, tickers: dict) -> float:
     total = 0.0
     for sym, pos in active_positions.items():
         entry = pos.get("entry_price") or pos.get("entry") or 0
-        qty   = pos.get("quantity", 0)
+        qty = pos.get("current_quantity") or pos.get("quantity", 0)
         price = tickers.get(sym, {}).get("last", entry)
         if entry <= 0 or qty <= 0 or price <= 0:
             continue
@@ -71,7 +71,7 @@ def compute_account_equity(balance: dict, tickers: dict) -> tuple[float, float]:
 def compute_exposure(active_positions: dict, tickers: dict, equity: float) -> tuple[float, float]:
     """Retourne (exposure_usd, exposure_pct)."""
     exposure_usd = sum(
-        pos["quantity"] * tickers.get(sym, {}).get("last", pos.get("entry_price", 0))
+        (pos.get("current_quantity") or pos["quantity"]) * tickers.get(sym, {}).get("last", pos.get("entry_price", 0))
         for sym, pos in active_positions.items()
     )
     exposure_pct = (exposure_usd / equity * 100) if equity > 0 else 0.0

@@ -182,9 +182,12 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
                 partial_exit_done = True
                 if EXIT_PARTIAL_TP1:
                     new_sl = entry
+                    half_qty = round((pos.get("current_quantity") or pos["quantity"]) * 0.5, 8)
                     asyncio.create_task(send_telegram(f"🟢 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
                     pos["sl_price"] = pos["sl"] = new_sl
                     pos["partial_exit"] = 1
+                    pos["current_quantity"] = half_qty
+                    pos["tp1_status"] = "FILLED"
                     clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
                     db.update_position(pos["id"], clean_updates)
                 else:
@@ -210,9 +213,12 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
                 partial_exit_done = True
                 if EXIT_PARTIAL_TP1:
                     new_sl = entry
+                    half_qty = round((pos.get("current_quantity") or pos["quantity"]) * 0.5, 8)
                     asyncio.create_task(send_telegram(f"🔴 {symbol} TP1 atteint ! SL déplacé au break‑even.", config))
                     pos["sl_price"] = pos["sl"] = new_sl
                     pos["partial_exit"] = 1
+                    pos["current_quantity"] = half_qty
+                    pos["tp1_status"] = "FILLED"
                     clean_updates = {k: v for k, v in pos.items() if k not in {"id", "entry", "sl", "tp1", "tp2"}}
                     db.update_position(pos["id"], clean_updates)
                 else:
@@ -239,7 +245,7 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
         if auto_exec:
             # Quantité réelle restante sur l'exchange : si TP1 a déjà été touché (sortie
             # partielle de 50%), il ne reste que 50% de la quantité d'origine en position.
-            remaining_qty = pos["quantity"] * 0.5 if partial_exit_done else pos["quantity"]
+            remaining_qty = (pos.get("current_quantity") or pos["quantity"] * 0.5) if partial_exit_done else pos["quantity"]
             res = await update_sl_order(
                 symbol=symbol,
                 quantity=remaining_qty,
@@ -268,6 +274,8 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
 
         pos["status"] = "closed"
         pos["exit_reason"] = exit_reason
+        if exit_reason == "TP2":
+            pos["tp2_status"] = "FILLED"
         pos["exit_price"] = exit_price
         pos["exit_date"] = str(after_entry.iloc[-1]["timestamp"])
         
@@ -276,13 +284,15 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
         # Sinon (SL ou TP1 direct sans partial_exit), 100% au prix de sortie unique.
         full_qty = pos["quantity"]
         if pos.get("partial_exit") and exit_reason != "TP1":
-            half_qty = full_qty * 0.5
+            # current_quantity = remaining volume after TP1 (already updated in DB)
+            remaining_qty = pos.get("current_quantity") or full_qty * 0.5
+            tp1_qty = full_qty - remaining_qty
             if direction == "LONG":
-                pnl_usd_tp1 = (tp1 - entry) * half_qty
-                pnl_usd_rest = (exit_price - entry) * half_qty
+                pnl_usd_tp1  = (tp1 - entry) * tp1_qty
+                pnl_usd_rest = (exit_price - entry) * remaining_qty
             else:
-                pnl_usd_tp1 = (entry - tp1) * half_qty
-                pnl_usd_rest = (entry - exit_price) * half_qty
+                pnl_usd_tp1  = (entry - tp1) * tp1_qty
+                pnl_usd_rest = (entry - exit_price) * remaining_qty
             pnl_usd = pnl_usd_tp1 + pnl_usd_rest
             pnl_pct = (pnl_usd / (entry * full_qty)) * 100 if entry * full_qty != 0 else 0
         else:
@@ -504,6 +514,7 @@ async def open_position(signal: dict, config: dict) -> dict:
         "tp1": signal["tp1"],
         "tp2": signal["tp2"],
         "quantity": quantity,
+        "current_quantity": quantity,
         "entry_date": datetime.now(timezone.utc).isoformat(),
         "status": "active",
         "partial_exit": 0,

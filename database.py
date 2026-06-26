@@ -5,7 +5,7 @@ from pathlib import Path
 
 log = logging.getLogger("database")
 
-DB_PATH = Path("trading_bot.db")
+DB_PATH = Path(__file__).parent / "trading_bot.db"
 
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
@@ -25,13 +25,16 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol TEXT NOT NULL,
                     direction TEXT NOT NULL,
-                    status TEXT NOT NULL, -- active, tp1_hit, closed
+                    status TEXT NOT NULL,
                     entry_price REAL NOT NULL,
                     entry_date TEXT NOT NULL,
                     quantity REAL NOT NULL,
+                    current_quantity REAL,
                     sl_price REAL NOT NULL,
                     tp1_price REAL NOT NULL,
                     tp2_price REAL NOT NULL,
+                    tp1_status TEXT DEFAULT 'PENDING',
+                    tp2_status TEXT DEFAULT 'PENDING',
                     partial_exit BOOLEAN DEFAULT 0,
                     sl_order_id TEXT,
                     tp1_order_id TEXT,
@@ -44,15 +47,19 @@ class DatabaseManager:
                 )
             """)
             
-            # Migration : Ajouter pnl_usd si elle n'existe pas (si la table existait déjà)
             cursor.execute("PRAGMA table_info(positions)")
             columns = [info[1] for info in cursor.fetchall()]
-            if 'pnl_usd' not in columns:
-                cursor.execute("ALTER TABLE positions ADD COLUMN pnl_usd REAL")
-            if 'tp1_order_id' not in columns:
-                cursor.execute("ALTER TABLE positions ADD COLUMN tp1_order_id TEXT")
-            if 'tp2_order_id' not in columns:
-                cursor.execute("ALTER TABLE positions ADD COLUMN tp2_order_id TEXT")
+            migrations = [
+                ("pnl_usd",          "ALTER TABLE positions ADD COLUMN pnl_usd REAL"),
+                ("tp1_order_id",     "ALTER TABLE positions ADD COLUMN tp1_order_id TEXT"),
+                ("tp2_order_id",     "ALTER TABLE positions ADD COLUMN tp2_order_id TEXT"),
+                ("current_quantity", "ALTER TABLE positions ADD COLUMN current_quantity REAL"),
+                ("tp1_status",       "ALTER TABLE positions ADD COLUMN tp1_status TEXT DEFAULT 'PENDING'"),
+                ("tp2_status",       "ALTER TABLE positions ADD COLUMN tp2_status TEXT DEFAULT 'PENDING'"),
+            ]
+            for col_name, alter_sql in migrations:
+                if col_name not in columns:
+                    cursor.execute(alter_sql)
 
             # Index unique pour éviter les doublons sur les positions actives
             cursor.execute("""
@@ -153,21 +160,24 @@ class DatabaseManager:
             conn.commit()
 
     def insert_position(self, pos_data: dict) -> int:
-        # pass removed
         """Insère une nouvelle position et retourne son ID."""
         with self._connect() as conn:
             cursor = conn.cursor()
             query = """
                 INSERT INTO positions (
-                    symbol, direction, status, entry_price, entry_date, 
-                    quantity, sl_price, tp1_price, tp2_price, 
+                    symbol, direction, status, entry_price, entry_date,
+                    quantity, current_quantity, sl_price, tp1_price, tp2_price,
+                    tp1_status, tp2_status,
                     partial_exit, sl_order_id, tp1_order_id, tp2_order_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
+            qty = pos_data["quantity"]
             cursor.execute(query, (
                 pos_data["symbol"], pos_data["direction"], pos_data["status"],
-                pos_data["entry"], pos_data["entry_date"], pos_data["quantity"],
+                pos_data["entry"], pos_data["entry_date"],
+                qty, qty,  # quantity and current_quantity initially equal
                 pos_data["sl"], pos_data["tp1"], pos_data["tp2"],
+                "PENDING", "PENDING",
                 pos_data.get("partial_exit", 0), pos_data.get("sl_order_id"),
                 pos_data.get("tp1_order_id"), pos_data.get("tp2_order_id")
             ))
