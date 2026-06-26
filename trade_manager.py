@@ -481,15 +481,27 @@ async def manage_positions():
         log.info("Aucune position ouverte.")
         return
 
+    auto_exec = config.get("execution", {}).get("auto_execute", False)
+
     exchange = await init_exchange_async()
+    trading_exchange = None
     try:
         for pos in positions:
             if pos.get("status") == "closed":
                 continue
             await check_position(pos, config, exchange=exchange)
-            await sync_position_with_exchange(pos, config, exchange)
+
+            if auto_exec:
+                if trading_exchange is None:
+                    trading_exchange = await init_trading_exchange()
+                try:
+                    await sync_position_with_exchange(pos, config, trading_exchange)
+                except Exception as e:
+                    log.error(f"SYNC {pos.get('symbol')} — erreur inattendue : {e}", exc_info=True)
     finally:
         await exchange.close()
+        if trading_exchange:
+            await trading_exchange.close()
 
     log.info(f"Positions mises à jour : {len(db.get_active_positions())} ouvertes")
 
