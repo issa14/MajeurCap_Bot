@@ -401,6 +401,78 @@ async def reconcile_positions_on_startup() -> None:
 
     log.info("=== Réconciliation terminée ===")
 
+async def sync_position_with_exchange(pos: dict, config: dict, exchange) -> None:
+    """
+    Reconcile a single DB position with its real state on Binance.
+    Detects manual partial closes, order modifications, or full closure.
+    Updates DB accordingly and sends Telegram alerts.
+    """
+    norm_sym = _normalize_symbol(pos["symbol"])
+    try:
+        raw_positions = await exchange.fetch_positions()
+        binance_by_norm = {}
+        for p in raw_positions:
+            if p.get("contracts") and float(p["contracts"]) != 0:
+                binance_by_norm[_normalize_symbol(p["symbol"])] = p
+    except Exception as e:
+        log.error(f"sync_position_with_exchange: error fetching positions ({e})")
+        return
+
+    if norm_sym not in binance_by_norm:
+        # Position missing on exchange – mark closed
+        log.warning(
+            f"RECONCILE {pos['symbol']} — active in DB but missing on Binance. Marking closed."
+        )
+        db.update_position(pos["id"], {
+            "status": "closed",
+            "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+        })
+        await send_telegram(
+            f"⚠️ RECONCILE {pos['symbol']} — Position active en DB mais introuvable sur Binance. Fermée automatiquement.",
+            config,
+        )
+        return
+
+    bpos = binance_by_norm[norm_sym]
+    # Compare quantity (detect partial manual close)
+    exchange_qty = float(bpos.get("contracts", 0))
+    db_qty = pos.get("current_quantity") or pos.get("quantity")
+    if db_qty is None:
+        db_qty = 0
+    if db_qty == 0:
+        tolerance = 0
+    else:
+        tolerance = 0.01 * db_qty
+    if abs(exchange_qty - db_qty) > tolerance:
+        db.update_position(pos["id"], {"current_quantity": exchange_qty})
+        await send_telegram(
+            f"🔄 RECONCILE {pos['symbol']} — Quantity updated: {db_qty} → {exchange_qty}",
+            config,
+        )
+
+    # Compare SL/TP prices (detect manual order modifications)
+    price_fields = [
+        ("sl", "stopPrice"),
+        ("tp1", "takeProfitPrice1"),
+        ("tp2", "takeProfitPrice2"),
+    ]
+    for db_field, exch_field in price_fields:
+        exch_price = bpos.get(exch_field) or bpos.get(db_field)
+        if exch_price is not None:
+            try:
+                exch_price = float(exch_price)
+            except Exception:
+                continue
+            db_price = pos.get(db_field)
+            if db_price is not None and abs(exch_price - db_price) > (0.001 * db_price if db_price != 0 else 0):
+                db.update_position(pos["id"], {db_field: exch_price})
+                await send_telegram(
+                    f"🔄 RECONCILE {pos['symbol']} — {db_field.upper()} price updated: {db_price} → {exch_price}",
+                    config,
+                )
+
+
 
 async def manage_positions():
     config = get_config()
@@ -415,6 +487,7 @@ async def manage_positions():
             if pos.get("status") == "closed":
                 continue
             await check_position(pos, config, exchange=exchange)
+            await sync_position_with_exchange(pos, config, exchange)
     finally:
         await exchange.close()
 
