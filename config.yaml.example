@@ -1,14 +1,14 @@
-# DPSK - Configuration Example
+# Dpsk - Configuration Example
 # Renommez ce fichier en config.yaml et remplissez vos clés.
 
 watchlist:
 - BTC/USDT
-- ETH/USDT
-- ARB/USDT
-- SUI/USDT
-- LINK/USDT
-- ADA/USDT
-- SOL/USDT
+#- ETH/USDT
+- HYPE/USDT:USDT
+- XRP/USDT
+#- LINK/USDT
+#- BNB/USDT
+#- SOL/USDT
 - VET/USDT
 
 timeframe: 4h
@@ -30,11 +30,11 @@ kc_mult: 2.0
 vol_ma_period: 20
 vol_surge_mult: 1.8
 adx_period: 14
-daily_trend_strict: true
+daily_trend_strict: false
 
 # Paramètres du Module 3 (détection de signal)
 signal:
-  cooldown_minutes: 240
+  cooldown_minutes: 15
   daily_filter_enabled: true
   adx_required: true
   adx_threshold: 20
@@ -47,9 +47,9 @@ signal:
   min_swing_diff_pct: 0.5
   rsi_long_zone: [30, 45]
   rsi_short_zone: [55, 70]
-  sl_atr_mult: 2.0
-  tp1_rr: 1.5
-  tp2_rr: 2.5
+  sl_atr_mult: 1.0
+  tp1_rr: 1.2
+  tp2_rr: 2.0
   zigzag_window: 3
 
 # --- SECRETS (À remplir dans votre config.yaml local) ---
@@ -57,6 +57,7 @@ telegram:
   token: "VOTRE_BOT_TOKEN"
   chat_id: "VOTRE_CHAT_ID"
   allowed_user_id: "VOTRE_USER_ID"
+  heartbeat_minutes: 300  # Heartbeat toutes les 5h (0 = désactivé)
 
 # ⚠️ MIGRATION : ancienne section "binance_testnet"
 # Clés API à générer sur : https://testnet.binancefutures.com
@@ -66,18 +67,19 @@ binance_testnet:
   demo: true          # ← remplace 'testnet: true'
 
 risk:
-  capital: 1000       # Fallback — écrasé par le solde live au moment du trade
-  leverage: 5         # ← NOUVEAU — levier futures (1 = pas de levier)
+  leverage: 5         # Levier futures (1 = pas de levier)
   risk_per_trade: 1.0
-  max_positions: 5
-  max_exposure: 30.0
+  max_positions: 3
+  max_exposure: 50.0
   daily_loss_limit: -5.0
-  trailing_sl_enabled: false
+  trailing_sl_enabled: true
   trailing_sl_activation_tp: 1
   trailing_sl_atr_mult: 2.0
   trailing_sl_callback_rate: 1.0
   dynamic_sizing_adx: true
+  max_position_size_pct: 1.0   # Plafond notionnel par trade (% du capital live)
+  safety_margin_pct: 5.0        # Marge de sécurité pour frais/slippage/réserves Binance
 
 execution:
-  auto_execute: false
-  spot_only: false    # ← false = futures LONG + SHORT activés
+  spot_only: false    # false = futures LONG + SHORT activés
+  auto_execute: true

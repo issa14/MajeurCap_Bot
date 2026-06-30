@@ -3,6 +3,7 @@ import logging
 import aiohttp
 from dashboard import get_dashboard_text
 from config_loader import get_config
+from bot_telegram import build_status_message
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -89,9 +90,22 @@ async def poll_updates():
                         # Envoi du dashboard en monospace
                         formatted_text = f"```\n{db_text}\n```"
                         await send_message(formatted_text, parse_mode="MarkdownV2", session=session)
-                    
+
+                    elif text.startswith("/status"):
+                        log.info("📥 Commande reçue : Status")
+                        msg = await build_status_message()
+                        if msg:
+                            await send_message(msg, parse_mode="HTML", session=session)
+                        else:
+                            await send_message("✅ Aucune position active en ce moment.", session=session)
+
                     elif text.startswith("/start"):
-                        await send_message("👋 Bonjour ! Envoyez `/db` pour voir l'état du bot.", session=session)
+                        await send_message(
+                            "👋 Bonjour ! Commandes disponibles :\n"
+                            "  /status — positions actives + PnL temps réel\n"
+                            "  /db — dashboard complet",
+                            session=session
+                        )
 
             except Exception as e:
                 log.error(f"Erreur polling : {e}")

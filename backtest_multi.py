@@ -118,7 +118,7 @@ async def main():
         ("noStruct_4", 3, 4, None),
     ]
 
-    watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "LINK/USDT", "SUI/USDT"]
+    watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "VET/USDT", "BNB/USDT", "HYPE/USDT:USDT"]
 
     results = []
 

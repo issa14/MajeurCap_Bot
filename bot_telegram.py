@@ -20,6 +20,7 @@ from config_loader import get_config, reload_config
 from database import db
 from logging.handlers import RotatingFileHandler
 from telegram_utils import send_telegram
+from dashboard import get_exchange
 
 # ─── Déduplication des signaux ───────────────────────────────────────────────
 # Mémorise le dernier envoi Telegram par symbole pour éviter le spam
@@ -89,6 +90,74 @@ def format_signal(sig: dict) -> str:
         text += f"  ✓ {html.escape(c)}\n"
     text += f"\nStructure : {trend} | BOS: {bos} | CHoCH: {choch} | Pivots: {pivots}"
     return text
+
+async def build_status_message() -> str:
+    """
+    Construit un message de statut concis pour le heartbeat et la commande /status.
+    Retourne une chaîne HTML listant les positions actives avec PnL temps réel.
+    Retourne None si aucune position active (pas d'envoi inutile).
+    """
+    config = get_config()
+    active_positions = [p for p in db.get_active_positions() if p.get("status") != "closed"]
+
+    if not active_positions:
+        return None
+
+    # Récupérer les prix courants
+    symbols = [p["symbol"] for p in active_positions]
+    exchange = await get_exchange(config)
+    try:
+        raw_tickers = await exchange.fetch_tickers(symbols)
+        tickers = {sym.split(":")[0]: t for sym, t in raw_tickers.items()}
+    except Exception as e:
+        log.warning(f"build_status_message: fetch_tickers échoué ({e})")
+        tickers = {}
+    finally:
+        await exchange.close()
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"📊 <b>Status positions — {now_str}</b>\n"]
+
+    total_pnl_usd = 0.0
+    for pos in active_positions:
+        symbol    = pos["symbol"]
+        direction = pos["direction"]
+        entry     = pos.get("entry_price") or pos.get("entry") or 0
+        sl        = pos.get("sl_price") or pos.get("sl") or 0
+        tp1       = pos.get("tp1_price") or pos.get("tp1") or 0
+        tp2       = pos.get("tp2_price") or pos.get("tp2") or 0
+        qty       = pos.get("current_quantity") or pos.get("quantity") or 0
+        tp1_status = pos.get("tp1_status", "PENDING")
+
+        price = tickers.get(symbol, {}).get("last", entry)
+
+        if entry > 0:
+            pnl_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+        else:
+            pnl_pct = 0.0
+
+        pnl_usd = (price - entry) * qty if direction == "LONG" else (entry - price) * qty
+        total_pnl_usd += pnl_usd
+
+        sl_dist = abs(price - sl) / price * 100 if price > 0 else 0.0
+        sl_warn = " ⚠️" if sl_dist < 1.0 else ""
+
+        dir_emoji  = "🟢" if direction == "LONG" else "🔴"
+        pnl_emoji  = "✅" if pnl_pct >= 0 else "❌"
+        tp1_badge  = " <i>[TP1✓]</i>" if tp1_status == "FILLED" else ""
+
+        lines.append(
+            f"{dir_emoji} <b>{symbol}</b>{tp1_badge}\n"
+            f"  Entry: <code>{entry}</code> → Now: <code>{price:.4f}</code>\n"
+            f"  PnL: {pnl_emoji} <b>{pnl_pct:+.2f}%</b> ({pnl_usd:+.2f} USDT)\n"
+            f"  SL: {sl_dist:.1f}%{sl_warn} | TP1: <code>{tp1}</code> | TP2: <code>{tp2}</code>"
+        )
+
+    pnl_total_emoji = "✅" if total_pnl_usd >= 0 else "❌"
+    lines.append(f"\n{pnl_total_emoji} PnL latent total : <b>{total_pnl_usd:+.2f} USDT</b>")
+    lines.append(f"📌 {len(active_positions)} position(s) active(s)")
+
+    return "\n".join(lines)
 
 # ─── Boucle principale ──────────────────────────────────────────────────
 async def run_scan_cycle():
@@ -192,7 +261,12 @@ async def main():
     POSITION_CHECK_INTERVAL = 60      # secondes — vérification des positions ouvertes
     SIGNAL_SCAN_INTERVAL    = 900     # secondes — scan signaux (toutes les 15 min)
 
+    config = get_config()
+    heartbeat_minutes = config.get("telegram", {}).get("heartbeat_minutes", 300)
+    HEARTBEAT_INTERVAL = heartbeat_minutes * 60  # conversion en secondes
+
     last_signal_scan = 0.0            # force un scan immédiat au démarrage
+    last_heartbeat   = asyncio.get_event_loop().time()  # premier heartbeat après N heures
 
     # Réconciliation unique au démarrage : DB vs Binance
     try:
@@ -217,6 +291,16 @@ async def main():
                 last_signal_scan = asyncio.get_event_loop().time()
             except Exception as e:
                 log.error(f"Erreur run_scan_cycle : {e}", exc_info=True)
+
+                # Heartbeat — toutes les N heures si positions actives (0 = désactivé)
+                if HEARTBEAT_INTERVAL > 0 and (now - last_heartbeat) >= HEARTBEAT_INTERVAL:
+                    try:
+                        msg = await build_status_message()
+                        if msg:
+                            await send_telegram(msg, config)
+                        last_heartbeat = asyncio.get_event_loop().time()
+                    except Exception as e:
+                        log.error(f"Erreur heartbeat : {e}", exc_info=True)
 
         # Attendre 60s (interruptible par stop_event)
         for _ in range(POSITION_CHECK_INTERVAL):
