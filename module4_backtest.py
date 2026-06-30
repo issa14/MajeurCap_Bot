@@ -30,6 +30,7 @@ def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
     bt_cfg = config.get("backtest", {})
     fee_pct = bt_cfg.get("fee_pct", 0.1) / 100
     slippage_pct = bt_cfg.get("slippage_pct", 0.05) / 100
+    leverage = config.get("risk", {}).get("leverage", 1)
 
     entry_price = signal["entry"]
     # Appliquer le slippage à l'entrée
@@ -93,7 +94,7 @@ def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
             
             # Les frais sont appliqués sur la valeur de position à l'entrée et à la sortie
             net_pnl = gross_pnl - (fee_pct * 2)
-            return {"result": result, "pnl_pct": net_pnl * 100, "exit_idx": idx}
+            return {"result": result, "pnl_pct": net_pnl * 100 * leverage, "exit_idx": idx}
 
     # Fin d'historique sans toucher aucun niveau
     last_close = df_future.iloc[-1]["close"]
@@ -105,7 +106,7 @@ def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
         gross_pnl = (entry_price - actual_exit) / entry_price
     
     net_pnl = gross_pnl - (fee_pct * 2)
-    return {"result": "EOD", "pnl_pct": net_pnl * 100, "exit_idx": df_future.index[-1]}
+    return {"result": "EOD", "pnl_pct": net_pnl * 100 * leverage, "exit_idx": df_future.index[-1]}
 
 # ─── Backtest principal corrigé ─────────────────────────────────────────────
 async def run_backtest(symbols: list = None, start_idx: int = 200, exclude_eod: bool = False):
