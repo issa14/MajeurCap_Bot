@@ -1,12 +1,11 @@
 """
-Backtest comparatif : sl_atr_mult 1.0 vs 2.0
-─────────────────────────────────────────────
-Objectif : déterminer si sl_atr_mult=2.0 offre un avantage réel sur sl_atr_mult=1.0
-en conditions équivalentes (même levier, trailing SL désactivé, même watchlist).
+Backtest comparatif : sl_atr_mult 1.0 vs 2.0 × trailing SL
+────────────────────────────────────────────────────────────
+Matrice 2×2 : sl_atr_mult (1.0 / 2.0) × trailing_sl_enabled (True / False).
 
-Note : trailing_sl_enabled est forcé à False dans les deux scénarios car simulate_trade()
-ne simule pas le trailing SL (géré uniquement en live dans trade_manager.py).
-Tester trailing SL en backtest nécessitera d'implémenter la logique dans simulate_trade().
+tp1_rr=1.2, tp2_rr=2.0 fixes dans tous les runs.
+Le trailing SL est simulé par simulate_trade() dans module4_backtest.py
+(sortie partielle 50% à TP1 + SL breakeven + trailing ATR-based).
 
 Usage : python3 backtest_sl_comparison.py
 """
@@ -68,7 +67,7 @@ async def main():
     )
 
     print("\n" + "=" * len(hdr))
-    print(f"  BACKTEST sl_atr_mult 1.0 vs 2.0  —  MajeurCap_Bot  (levier {leverage}x, trailing SL désactivé)")
+    print(f"  BACKTEST sl_atr_mult 1.0 vs 2.0  —  MajeurCap_Bot  (levier {leverage}x, matrice 2×2 trailing SL)")
     print("=" * len(hdr))
     print(hdr)
     print("-" * len(hdr))
@@ -157,8 +156,7 @@ async def main():
             print(f"~ Écart faible ({delta:.2f} Sharpe) — différence non concluante.")
             print("  Recommandation : maintenir sl_atr_mult=1.0 (config validée antérieurement).")
 
-    print("\nNote : trailing SL non simulé dans ce backtest.")
-    print("Pour tester trailing SL, il faudra implémenter la logique dans simulate_trade().\n")
+    print("\nNote : trailing SL activé/désactivé selon le scénario (simulé dans simulate_trade()).\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
