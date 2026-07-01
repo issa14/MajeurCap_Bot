@@ -23,12 +23,14 @@ WATCHLIST = [
     "LINK/USDT", "BNB/USDT", "SOL/USDT", "VET/USDT"
 ]
 
-# ── Scénarios ────────────────────────────────────────────────────────────────
-# Seule variable : sl_atr_mult. Tout le reste est identique.
-# tp1_rr=1.2, tp2_rr=2.0 = config validée en prod.
+# ── Matrice 2×2 : sl_atr_mult × trailing_sl ──────────────────────────────────
+# Format : (label, sl_atr_mult, trailing_sl_enabled)
+# tp1_rr=1.2, tp2_rr=2.0 fixes dans tous les runs.
 SCENARIOS = [
-    ("sl1.0_tp1.2", 1.0, 1.2, 2.0),   # config prod actuelle
-    ("sl2.0_tp1.2", 2.0, 1.2, 2.0),   # SL plus large (testé dans le rapport du 2026-06-30)
+    ("sl1.0_no_trail",  1.0, False),   # ◄ config prod actuelle
+    ("sl1.0_trail",     1.0, True),    # prod SL + trailing activé
+    ("sl2.0_no_trail",  2.0, False),   # SL large, pas de trailing
+    ("sl2.0_trail",     2.0, True),    # SL large + trailing
 ]
 
 # ── Fenêtres ─────────────────────────────────────────────────────────────────
@@ -48,7 +50,7 @@ BASE_PARAMS = {
     "zigzag_window":              3,
     "min_swing_diff_pct":         0.5,
     "daily_trend_strict":         False,
-    "trailing_sl_enabled":        False,   # forcé False : non simulé dans simulate_trade()
+    # trailing_sl_enabled injecté par chaque scénario
 }
 
 async def main():
@@ -75,28 +77,29 @@ async def main():
 
     for window_name, since_ts in WINDOWS:
         print(f"\n── Fenêtre : {window_name} ──")
-        for label, sl_mult, tp1_rr, tp2_rr in SCENARIOS:
+        for label, sl_mult, trailing in SCENARIOS:
             params = {
                 **BASE_PARAMS,
-                "sl_atr_mult": sl_mult,
-                "tp1_rr":      tp1_rr,
-                "tp2_rr":      tp2_rr,
+                "sl_atr_mult":        sl_mult,
+                "tp1_rr":             1.2,
+                "tp2_rr":             2.0,
+                "trailing_sl_enabled": trailing,
             }
             trades_df = await run_single_backtest(params, symbols=WATCHLIST, since=since_ts)
             m = compute_metrics(trades_df, initial_capital=initial_capital)
 
             all_results.append({
                 "label": label, "window": window_name,
-                "sl_mult": sl_mult, "tp1_rr": tp1_rr, "tp2_rr": tp2_rr,
+                "sl_mult": sl_mult, "trailing": trailing,
                 **m
             })
 
-            flag = "◄ PROD" if sl_mult == 1.0 else ""
+            flag = "◄ PROD" if label == "sl1.0_no_trail" else ""
             print(
                 f"{label:<{col_w}} | {window_name:<10} | "
                 f"{m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>4.2f} | "
                 f"{m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>6.2f} | "
-                f"{sl_mult:<7} | {tp1_rr:<6} | {tp2_rr}  {flag}"
+                f"sl={sl_mult} trail={'Y' if trailing else 'N'}  {flag}"
             )
 
     # ── Résumé comparatif ─────────────────────────────────────────────────────

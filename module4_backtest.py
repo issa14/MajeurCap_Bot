@@ -26,86 +26,169 @@ def simulate_trade(df_future: pd.DataFrame, signal: dict, config: dict) -> dict:
     """
     Parcourt les bougies futures jusqu'à toucher SL, TP1 ou TP2.
     Inclut les frais et le slippage.
+
+    Si trailing_sl_enabled=True (lu depuis config["signal"] ou config["risk"]) :
+      - TP1 déclenche une sortie partielle 50% + SL déplacé au breakeven (entry)
+      - Le trailing SL ATR-based s'active sur le 50% restant
+      - PnL combiné = 0.5 × pnl_tp1 + 0.5 × pnl_final
+      - Résultat "TSL" si le trailing SL est touché au-dessus du SL initial
+    Si trailing_sl_enabled=False : comportement identique à l'ancienne version.
+
+    Réplique fidèle de la logique trade_manager.py (manage_position).
     """
-    bt_cfg = config.get("backtest", {})
-    fee_pct = bt_cfg.get("fee_pct", 0.1) / 100
-    slippage_pct = bt_cfg.get("slippage_pct", 0.05) / 100
+    bt_cfg   = config.get("backtest", {})
+    fee_pct  = bt_cfg.get("fee_pct", 0.1) / 100
+    slip_pct = bt_cfg.get("slippage_pct", 0.05) / 100
     leverage = config.get("risk", {}).get("leverage", 1)
 
+    sig_cfg  = config.get("signal", {})
+    risk_cfg = config.get("risk", {})
+    trailing_enabled  = sig_cfg.get("trailing_sl_enabled",  risk_cfg.get("trailing_sl_enabled",  False))
+    trailing_atr_mult = sig_cfg.get("trailing_sl_atr_mult", risk_cfg.get("trailing_sl_atr_mult", 2.0))
+
+    direction   = signal["direction"]
     entry_price = signal["entry"]
-    # Appliquer le slippage à l'entrée
-    if signal["direction"] == "LONG":
-        entry_price *= (1 + slippage_pct)
-    else:
-        entry_price *= (1 - slippage_pct)
-    
-    sl = signal["sl"]
+    entry_price = entry_price * (1 + slip_pct) if direction == "LONG" else entry_price * (1 - slip_pct)
+
+    sl  = signal["sl"]
     tp1 = signal["tp1"]
     tp2 = signal["tp2"]
-    direction = signal["direction"]
+
+    partial_done   = False   # TP1 partiel déjà enregistré
+    tp1_exit_price = None    # prix réel de sortie partielle à TP1 (après slippage)
+    current_sl     = sl      # SL dynamique (se déplace après TP1)
+
+    def _net(gross):
+        """Applique frais (×2 : entrée + sortie) et levier au PnL brut."""
+        return (gross - fee_pct * 2) * 100 * leverage
 
     for idx, row in df_future.iterrows():
-        high = row["high"]
-        low = row["low"]
-        
-        exit_price = None
-        result = None
-        
-        is_bullish = row["close"] >= row["open"]
+        high    = row["high"]
+        low     = row["low"]
+        close   = row["close"]
+        atr     = row.get("atr", 0) or 0
+        bullish = close >= row["open"]
+
         if direction == "LONG":
-            if is_bullish:
+            # ── Phase 1 : avant TP1 ──────────────────────────────────────────
+            if not partial_done:
+                if bullish:
+                    if high >= tp2:
+                        g = (tp2 * (1 - slip_pct) - entry_price) / entry_price
+                        return {"result": "TP2", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif high >= tp1:
+                        if trailing_enabled:
+                            partial_done   = True
+                            tp1_exit_price = tp1 * (1 - slip_pct)
+                            current_sl     = entry_price   # breakeven
+                        else:
+                            g = (tp1 * (1 - slip_pct) - entry_price) / entry_price
+                            return {"result": "TP1", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif low <= current_sl:
+                        g = (current_sl * (1 - slip_pct) - entry_price) / entry_price
+                        return {"result": "SL", "pnl_pct": _net(g), "exit_idx": idx}
+                else:  # bearish
+                    if low <= current_sl:
+                        g = (current_sl * (1 - slip_pct) - entry_price) / entry_price
+                        return {"result": "SL", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif high >= tp2:
+                        g = (tp2 * (1 - slip_pct) - entry_price) / entry_price
+                        return {"result": "TP2", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif high >= tp1:
+                        if trailing_enabled:
+                            partial_done   = True
+                            tp1_exit_price = tp1 * (1 - slip_pct)
+                            current_sl     = entry_price
+                        else:
+                            g = (tp1 * (1 - slip_pct) - entry_price) / entry_price
+                            return {"result": "TP1", "pnl_pct": _net(g), "exit_idx": idx}
+
+            # ── Phase 2 : trailing ATR sur 50% restant ───────────────────────
+            if partial_done:
+                if atr > 0:
+                    atr_sl = round(close - atr * trailing_atr_mult, 8)
+                    if atr_sl > current_sl:
+                        current_sl = atr_sl
                 if high >= tp2:
-                    result, exit_price = "TP2", tp2
-                elif high >= tp1:
-                    result, exit_price = "TP1", tp1
-                elif low <= sl:
-                    result, exit_price = "SL", sl
-            else:
-                if low <= sl:
-                    result, exit_price = "SL", sl
-                elif high >= tp2:
-                    result, exit_price = "TP2", tp2
-                elif high >= tp1:
-                    result, exit_price = "TP1", tp1
+                    p1 = (tp1_exit_price - entry_price) / entry_price
+                    p2 = (tp2 * (1 - slip_pct) - entry_price) / entry_price
+                    return {"result": "TP2", "pnl_pct": _net(0.5 * p1 + 0.5 * p2), "exit_idx": idx}
+                if low <= current_sl:
+                    p1 = (tp1_exit_price - entry_price) / entry_price
+                    p2 = (current_sl * (1 - slip_pct) - entry_price) / entry_price
+                    label = "TSL" if current_sl > sl else "SL"
+                    return {"result": label, "pnl_pct": _net(0.5 * p1 + 0.5 * p2), "exit_idx": idx}
+
         else:  # SHORT
-            if is_bullish:
-                if high >= sl:
-                    result, exit_price = "SL", sl
-                elif low <= tp2:
-                    result, exit_price = "TP2", tp2
-                elif low <= tp1:
-                    result, exit_price = "TP1", tp1
-            else:
+            # ── Phase 1 ──────────────────────────────────────────────────────
+            if not partial_done:
+                if bullish:
+                    if high >= current_sl:
+                        g = (entry_price - current_sl * (1 + slip_pct)) / entry_price
+                        return {"result": "SL", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif low <= tp2:
+                        g = (entry_price - tp2 * (1 + slip_pct)) / entry_price
+                        return {"result": "TP2", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif low <= tp1:
+                        if trailing_enabled:
+                            partial_done   = True
+                            tp1_exit_price = tp1 * (1 + slip_pct)
+                            current_sl     = entry_price
+                        else:
+                            g = (entry_price - tp1 * (1 + slip_pct)) / entry_price
+                            return {"result": "TP1", "pnl_pct": _net(g), "exit_idx": idx}
+                else:  # bearish
+                    if low <= tp2:
+                        g = (entry_price - tp2 * (1 + slip_pct)) / entry_price
+                        return {"result": "TP2", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif low <= tp1:
+                        if trailing_enabled:
+                            partial_done   = True
+                            tp1_exit_price = tp1 * (1 + slip_pct)
+                            current_sl     = entry_price
+                        else:
+                            g = (entry_price - tp1 * (1 + slip_pct)) / entry_price
+                            return {"result": "TP1", "pnl_pct": _net(g), "exit_idx": idx}
+                    elif high >= current_sl:
+                        g = (entry_price - current_sl * (1 + slip_pct)) / entry_price
+                        return {"result": "SL", "pnl_pct": _net(g), "exit_idx": idx}
+
+            # ── Phase 2 ──────────────────────────────────────────────────────
+            if partial_done:
+                if atr > 0:
+                    atr_sl = round(close + atr * trailing_atr_mult, 8)
+                    if atr_sl < current_sl:
+                        current_sl = atr_sl
                 if low <= tp2:
-                    result, exit_price = "TP2", tp2
-                elif low <= tp1:
-                    result, exit_price = "TP1", tp1
-                elif high >= sl:
-                    result, exit_price = "SL", sl
+                    p1 = (entry_price - tp1_exit_price) / entry_price
+                    p2 = (entry_price - tp2 * (1 + slip_pct)) / entry_price
+                    return {"result": "TP2", "pnl_pct": _net(0.5 * p1 + 0.5 * p2), "exit_idx": idx}
+                if high >= current_sl:
+                    p1 = (entry_price - tp1_exit_price) / entry_price
+                    p2 = (entry_price - current_sl * (1 + slip_pct)) / entry_price
+                    label = "TSL" if current_sl < sl else "SL"
+                    return {"result": label, "pnl_pct": _net(0.5 * p1 + 0.5 * p2), "exit_idx": idx}
 
-        if result:
-            # Calcul PnL avec frais et slippage à la sortie
-            if direction == "LONG":
-                actual_exit = exit_price * (1 - slippage_pct)
-                gross_pnl = (actual_exit - entry_price) / entry_price
-            else:
-                actual_exit = exit_price * (1 + slippage_pct)
-                gross_pnl = (entry_price - actual_exit) / entry_price
-            
-            # Les frais sont appliqués sur la valeur de position à l'entrée et à la sortie
-            net_pnl = gross_pnl - (fee_pct * 2)
-            return {"result": result, "pnl_pct": net_pnl * 100 * leverage, "exit_idx": idx}
-
-    # Fin d'historique sans toucher aucun niveau
+    # ── EOD : fin d'historique sans toucher aucun niveau ─────────────────────
     last_close = df_future.iloc[-1]["close"]
     if direction == "LONG":
-        actual_exit = last_close * (1 - slippage_pct)
-        gross_pnl = (actual_exit - entry_price) / entry_price
+        actual_eod = last_close * (1 - slip_pct)
+        if partial_done:
+            p1    = (tp1_exit_price - entry_price) / entry_price
+            p2    = (actual_eod - entry_price) / entry_price
+            gross = 0.5 * p1 + 0.5 * p2
+        else:
+            gross = (actual_eod - entry_price) / entry_price
     else:
-        actual_exit = last_close * (1 + slippage_pct)
-        gross_pnl = (entry_price - actual_exit) / entry_price
-    
-    net_pnl = gross_pnl - (fee_pct * 2)
+        actual_eod = last_close * (1 + slip_pct)
+        if partial_done:
+            p1    = (entry_price - tp1_exit_price) / entry_price
+            p2    = (entry_price - actual_eod) / entry_price
+            gross = 0.5 * p1 + 0.5 * p2
+        else:
+            gross = (entry_price - actual_eod) / entry_price
+
+    net_pnl = gross - (fee_pct * 2)
     return {"result": "EOD", "pnl_pct": net_pnl * 100 * leverage, "exit_idx": df_future.index[-1]}
 
 # ─── Backtest principal corrigé ─────────────────────────────────────────────
