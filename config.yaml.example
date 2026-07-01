@@ -41,7 +41,7 @@ signal:
   fibo_proximity_atr_mult: 0.5
   fibo_proximity_pct_max: 0.6
   kc_filter: true
-  min_confluences: 3
+  min_confluences: 4
   min_confluences_no_struct: 4
   min_pivots: 4
   min_swing_diff_pct: 0.5
@@ -73,7 +73,7 @@ risk:
   max_positions: 5
   max_exposure: 250.0
   daily_loss_limit: -5.0
-  trailing_sl_enabled: true
+  trailing_sl_enabled: false
   trailing_sl_activation_tp: 1
   trailing_sl_atr_mult: 2.0
   trailing_sl_callback_rate: 1.0
