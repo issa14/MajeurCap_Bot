@@ -14,8 +14,8 @@ MajeurCap is a modular, high-performance cryptocurrency trading bot designed for
 ## Directory Structure
 
 - `main.py`: CLI entry point. Modes: `--live` (trading cycle), `--listen` (Telegram listener), `--all` (both), `--backtest`, `--check`.
-- `bot_telegram.py`: Main trading loop. Optimised cycles: 60s position monitoring / 15min signal scan. Heartbeat every N minutes. Signal deduplication via cooldown.
-- `bot_listener.py`: Telegram command interface (polling). Commands: `/status`, `/db` (dashboard), `/start`.
+- `bot_telegram.py`: Main trading loop. Optimised cycles: 60s position monitoring / 15min signal scan. Signal deduplication via cooldown.
+- `bot_listener.py`: Telegram command interface (polling). Commands: `/db` (dashboard), `/start`. (`/status` not yet implemented — pending Phase 8)
 - `trade_manager.py`: Position management, trailing SL (ATR-based), exchange order sync & cleanup, JSON→SQLite migration, startup reconciliation (DB vs Binance), periodic position sync with exchange.
 - `execution.py`: Order placement (Binance Futures Demo/Mainnet). Supports entry market order + SL (STOP_MARKET) + TP1 (TAKE_PROFIT_MARKET 50%) + TP2 (TAKE_PROFIT_MARKET 100%). Stop-loss update for trailing.
 - `risk_manager.py`: Leverage-aware position sizing with ADX dynamic multiplier, exposure cap, max positions limit, and capital-available check.
@@ -25,7 +25,7 @@ MajeurCap is a modular, high-performance cryptocurrency trading bot designed for
 - `module4_backtest.py`: Backtesting framework with realistic fees/slippage.
 - `backtest_multi.py`: Multi-scenario analysis with leverage and signal quality matrix.
 - `backtest_sl_tp.py`: SL/TP optimisation backtesting.
-- `backtest_leverage.py`: Leverage-specific backtest analysis.
+- `backtest_sl_comparison.py`: Comparative backtest sl_atr_mult 1.0 vs 2.0 on two time windows (recent + historical). Uses fixed leverage from config.yaml.
 - `dashboard.py`: Terminal dashboard (rich text) and Telegram Markdown dashboard. Metrics: equity, exposure, daily drawdown, win rate, unrealized PnL, active positions with SL distance.
 - `dashboard_api.py`: FastAPI REST API (port 8000) serving JSON data for the web dashboard (`/api/dashboard`, `/api/history`, `/api/signals`). Includes CCXT Binance Demo retry logic for StreamReader bug.
 - `dashboard.html`: HTML/CSS/JS web dashboard consuming `dashboard_api.py`.
@@ -85,7 +85,7 @@ To ensure the bot restarts automatically on system boot or crash, deploy it as a
 - [x] **Web Dashboard:** `dashboard.html` with interactive HTML/CSS/JS UI.
 - [x] **Startup Reconciliation:** DB positions compared against real Binance positions on startup — missing positions closed, orphan positions alerted.
 - [x] **Periodic Position Sync:** `sync_position_with_exchange()` detects manual quantity/price changes on Binance each cycle.
-- [x] **Telegram Heartbeat:** Configurable periodic status message (active positions + PnL) via `heartbeat_minutes`.
+- [ ] **Telegram Heartbeat + /status command:** Periodic status message (active positions + PnL) via `heartbeat_minutes` + `/status` Telegram command. (Pending Phase 8 — not yet implemented)
 - [x] **Signal Logging:** All detected signals (traded or rejected) logged to `signals_log` table and exposed via API.
 - [x] **Telegram Utils Centralization:** `telegram_utils.py` for all Telegram message sending.
 - [x] **ADX Dynamic Position Sizing:** Position size adjusts based on ADX trend strength (0.5×–1.5× multiplier).
