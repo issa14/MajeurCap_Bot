@@ -474,6 +474,159 @@ async def sync_position_with_exchange(pos: dict, config: dict, exchange) -> None
 
 
 
+async def verify_active_orders(config: dict) -> None:
+    """
+    Vérifie périodiquement que les ordres SL/TP de toutes les positions actives
+    existent toujours sur Binance. Recrée ceux qui ont disparu (annulés, expirés,
+    ou supprimés par l'exchange). Appelé toutes les ~5 minutes.
+    """
+    auto_exec = config.get("execution", {}).get("auto_execute", False)
+    if not auto_exec:
+        return
+
+    positions = db.get_active_positions()
+    if not positions:
+        return
+
+    exchange = await init_trading_exchange()
+    await exchange.load_markets()
+    try:
+        for pos in positions:
+            symbol = pos["symbol"]
+            pos_id = pos["id"]
+            direction = pos["direction"]
+            sl_order_id  = pos.get("sl_order_id")
+            tp1_order_id = pos.get("tp1_order_id")
+            tp2_order_id = pos.get("tp2_order_id")
+            sl_price  = pos.get("sl_price") or pos.get("sl") or 0
+            tp1_price = pos.get("tp1_price") or pos.get("tp1") or 0
+            tp2_price = pos.get("tp2_price") or pos.get("tp2") or 0
+            qty       = pos.get("current_quantity") or pos.get("quantity") or 0
+            tp1_hit   = pos.get("tp1_status") == "FILLED"
+
+            if qty <= 0:
+                continue
+
+            # ── Vérifier / réparer SL ──────────────────────────────────────
+            sl_ok = False
+            if sl_order_id:
+                try:
+                    order = await exchange.fetch_order(sl_order_id, symbol)
+                    status = order.get("status", "")
+                    if status not in ("canceled", "expired"):
+                        sl_ok = True
+                    else:
+                        log.warning(
+                            f"verify_orders {symbol} — SL {sl_order_id} status={status}, recréation"
+                        )
+                except Exception as e:
+                    log.warning(
+                        f"verify_orders {symbol} — SL {sl_order_id} introuvable ({e}), recréation"
+                    )
+
+            if not sl_ok and sl_price > 0 and qty > 0:
+                try:
+                    sl_side = "sell" if direction == "LONG" else "buy"
+                    qty_precise = float(exchange.amount_to_precision(symbol, qty))
+                    new_sl = await exchange.create_order(
+                        symbol=symbol,
+                        type="stop_market",
+                        side=sl_side,
+                        amount=qty_precise,
+                        price=None,
+                        params={"stopPrice": sl_price, "reduceOnly": True},
+                    )
+                    db.update_position(pos_id, {"sl_order_id": new_sl["id"]})
+                    log.info(f"verify_orders {symbol} — SL recréé: {new_sl['id']}")
+                    asyncio.create_task(
+                        send_telegram(
+                            f"🔧 {symbol} — SL recréé automatiquement (ordre précédent disparu de Binance)",
+                            config,
+                        )
+                    )
+                except Exception as e:
+                    log.error(f"verify_orders {symbol} — échec recréation SL: {e}")
+                    asyncio.create_task(
+                        send_telegram(
+                            f"🚨 URGENT {symbol} — ÉCHEC recréation SL ! Position SANS stop-loss actif.",
+                            config,
+                        )
+                    )
+
+            # ── Vérifier / réparer TP1 (seulement si pas encore hit) ───────
+            if not tp1_hit and tp1_order_id:
+                tp1_ok = False
+                try:
+                    order = await exchange.fetch_order(tp1_order_id, symbol)
+                    status = order.get("status", "")
+                    if status not in ("canceled", "expired"):
+                        tp1_ok = True
+                    else:
+                        log.warning(
+                            f"verify_orders {symbol} — TP1 {tp1_order_id} status={status}, recréation"
+                        )
+                except Exception as e:
+                    log.warning(
+                        f"verify_orders {symbol} — TP1 {tp1_order_id} introuvable ({e}), recréation"
+                    )
+
+                if not tp1_ok and tp1_price > 0 and qty > 0:
+                    try:
+                        sl_side = "sell" if direction == "LONG" else "buy"
+                        qty_tp1 = float(exchange.amount_to_precision(symbol, qty * 0.5))
+                        new_tp1 = await exchange.create_order(
+                            symbol=symbol,
+                            type="take_profit_market",
+                            side=sl_side,
+                            amount=qty_tp1,
+                            price=None,
+                            params={"stopPrice": tp1_price, "reduceOnly": True},
+                        )
+                        db.update_position(pos_id, {"tp1_order_id": new_tp1["id"]})
+                        log.info(f"verify_orders {symbol} — TP1 recréé: {new_tp1['id']}")
+                    except Exception as e:
+                        log.error(f"verify_orders {symbol} — échec recréation TP1: {e}")
+
+            # ── Vérifier / réparer TP2 ──────────────────────────────────────
+            if tp2_order_id:
+                tp2_ok = False
+                try:
+                    order = await exchange.fetch_order(tp2_order_id, symbol)
+                    status = order.get("status", "")
+                    if status not in ("canceled", "expired"):
+                        tp2_ok = True
+                    else:
+                        log.warning(
+                            f"verify_orders {symbol} — TP2 {tp2_order_id} status={status}, recréation"
+                        )
+                except Exception as e:
+                    log.warning(
+                        f"verify_orders {symbol} — TP2 {tp2_order_id} introuvable ({e}), recréation"
+                    )
+
+                if not tp2_ok and tp2_price > 0 and qty > 0:
+                    try:
+                        sl_side = "sell" if direction == "LONG" else "buy"
+                        qty_tp2 = float(exchange.amount_to_precision(symbol, qty * 0.5))
+                        new_tp2 = await exchange.create_order(
+                            symbol=symbol,
+                            type="take_profit_market",
+                            side=sl_side,
+                            amount=qty_tp2,
+                            price=None,
+                            params={"stopPrice": tp2_price, "reduceOnly": True},
+                        )
+                        db.update_position(pos_id, {"tp2_order_id": new_tp2["id"]})
+                        log.info(f"verify_orders {symbol} — TP2 recréé: {new_tp2['id']}")
+                    except Exception as e:
+                        log.error(f"verify_orders {symbol} — échec recréation TP2: {e}")
+
+            await asyncio.sleep(0.3)  # petit délai entre chaque symbole pour limiter le rate-limit
+
+    finally:
+        await exchange.close()
+
+
 async def manage_positions():
     config = get_config()
     positions = load_positions()

@@ -15,7 +15,7 @@ sys.path.insert(0, ".")
 from module1_data_v3 import init_exchange_async, fetch_all_async, fetch_daily_all_async
 from module2_AT import analyze_all
 from module3_signal import scan_all
-from trade_manager import manage_positions, open_position, reconcile_positions_on_startup
+from trade_manager import manage_positions, open_position, reconcile_positions_on_startup, verify_active_orders
 from config_loader import get_config, reload_config
 from database import db
 from logging.handlers import RotatingFileHandler
@@ -258,15 +258,19 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
-    POSITION_CHECK_INTERVAL = 60      # secondes — vérification des positions ouvertes
-    SIGNAL_SCAN_INTERVAL    = 900     # secondes — scan signaux (toutes les 15 min)
+    POSITION_CHECK_INTERVAL = 60       # secondes — vérification des positions ouvertes
+    SIGNAL_SCAN_INTERVAL    = 900      # secondes — scan signaux (toutes les 15 min)
+    RECONCILE_INTERVAL      = 1800     # secondes — réconciliation DB↔Binance (30 min)
+    VERIFY_ORDERS_INTERVAL  = 300      # secondes — vérification ordres SL/TP (5 min)
 
     config = get_config()
     heartbeat_minutes = config.get("telegram", {}).get("heartbeat_minutes", 300)
     HEARTBEAT_INTERVAL = heartbeat_minutes * 60  # conversion en secondes
 
-    last_signal_scan = 0.0            # force un scan immédiat au démarrage
-    last_heartbeat   = asyncio.get_event_loop().time()  # premier heartbeat après N heures
+    last_signal_scan   = 0.0  # force un scan immédiat au démarrage
+    last_heartbeat     = asyncio.get_event_loop().time()
+    last_reconcile     = asyncio.get_event_loop().time()  # déjà fait au startup, on attend le prochain cycle
+    last_verify_orders = asyncio.get_event_loop().time()  # idem
 
     # Réconciliation unique au démarrage : DB vs Binance
     try:
@@ -292,15 +296,31 @@ async def main():
             except Exception as e:
                 log.error(f"Erreur run_scan_cycle : {e}", exc_info=True)
 
-                # Heartbeat — toutes les N heures si positions actives (0 = désactivé)
-                if HEARTBEAT_INTERVAL > 0 and (now - last_heartbeat) >= HEARTBEAT_INTERVAL:
-                    try:
-                        msg = await build_status_message()
-                        if msg:
-                            await send_telegram(msg, config)
-                        last_heartbeat = asyncio.get_event_loop().time()
-                    except Exception as e:
-                        log.error(f"Erreur heartbeat : {e}", exc_info=True)
+        # 3. Réconciliation périodique DB↔Binance — toutes les 30 min
+        if (now - last_reconcile) >= RECONCILE_INTERVAL:
+            try:
+                await reconcile_positions_on_startup()
+                last_reconcile = asyncio.get_event_loop().time()
+            except Exception as e:
+                log.error(f"Erreur reconcile périodique : {e}", exc_info=True)
+
+        # 4. Vérification des ordres SL/TP — toutes les 5 min
+        if (now - last_verify_orders) >= VERIFY_ORDERS_INTERVAL:
+            try:
+                await verify_active_orders(config)
+                last_verify_orders = asyncio.get_event_loop().time()
+            except Exception as e:
+                log.error(f"Erreur verify_active_orders : {e}", exc_info=True)
+
+        # 5. Heartbeat — toutes les N heures si positions actives (0 = désactivé)
+        if HEARTBEAT_INTERVAL > 0 and (now - last_heartbeat) >= HEARTBEAT_INTERVAL:
+            try:
+                msg = await build_status_message()
+                if msg:
+                    await send_telegram(msg, config)
+                last_heartbeat = asyncio.get_event_loop().time()
+            except Exception as e:
+                log.error(f"Erreur heartbeat : {e}", exc_info=True)
 
         # Attendre 60s (interruptible par stop_event)
         for _ in range(POSITION_CHECK_INTERVAL):
@@ -308,7 +328,7 @@ async def main():
                 break
             await asyncio.sleep(1)
 
-        log.info("Signal d'arrêt reçu — arrêt propre du bot après le cycle en cours.")
+    log.info("Signal d'arrêt reçu — arrêt propre du bot après le cycle en cours.")
 
     # Cleanup : attendre les tasks asyncio pendantes (create_task fire-and-forget)
     # pour éviter les "Unclosed client session" sur les sessions aiohttp.
