@@ -3,12 +3,12 @@
 
 watchlist:
 - BTC/USDT
-#- ETH/USDT
-- HYPE/USDT:USDT
+- ETH/USDT
+- HYPE/USDT
 - XRP/USDT
-#- LINK/USDT
-#- BNB/USDT
-#- SOL/USDT
+- LINK/USDT
+- BNB/USDT
+- SOL/USDT
 - VET/USDT
 
 timeframe: 4h
@@ -68,9 +68,10 @@ binance_testnet:
 
 risk:
   leverage: 5         # Levier futures (1 = pas de levier)
+  #capital: 75800     # Capital initial (commenté = lecture automatique depuis le wallet)
   risk_per_trade: 1.0
-  max_positions: 3
-  max_exposure: 50.0
+  max_positions: 5
+  max_exposure: 250.0
   daily_loss_limit: -5.0
   trailing_sl_enabled: true
   trailing_sl_activation_tp: 1

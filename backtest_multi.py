@@ -113,19 +113,20 @@ async def main():
     # Score pondéré (min_score) rejeté définitivement comme filtre d'entrée (Sharpe -1.06
     # historical, PnL -285%) — reste uniquement utilisé pour départager LONG/SHORT (fix session 6)
     config_candidates = [
-        ("old_count_3", 3, 3.5, None),
-        ("noStruct_4", 3, 4, None),
+        ("old_count_3",   3, 3.5, None, 2.0, False),  # sl_atr_mult=2.0, pas de trailing
+        ("noStruct_4",    3, 4.0, None, 2.0, False),  # sl_atr_mult=2.0, pas de trailing
+        ("prod_trailing", 3, 4.0, None, 1.0, True ),  # PRODUCTION REELLE : sl_atr_mult=1.0 + trailing activé
     ]
 
     watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "VET/USDT", "BNB/USDT", "HYPE/USDT:USDT"]
 
     results = []
 
-    print(f"{'Seuil':<12} | {'MinConf':<8} | {'NoStruct':<9} | {'MinScore':<7} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
-    print("-" * 100)
+    print(f"{'Seuil':<15} | {'MinConf':<8} | {'NoStruct':<9} | {'SLmult':<6} | {'Trades':<6} | {'WR%':<6} | {'PF':<6} | {'PnL%':<8} | {'DD%':<6} | {'Sharpe'}")
+    print("-" * 105)
 
     for case_name, since_ts in comparison_cases:
-        for cfg_name, min_conf, min_conf_no_struct, min_score in config_candidates:
+        for cfg_name, min_conf, min_conf_no_struct, min_score, sl_atr_mult, trailing in config_candidates:
             params = {
                 "adx_required": True,
                 "daily_filter_enabled": True,
@@ -136,8 +137,8 @@ async def main():
                 "zigzag_window": 3,
                 "min_swing_diff_pct": 0.5,
                 "daily_trend_strict": False,
-                "sl_atr_mult": 2.0,
-                "trailing_sl_enabled": False,
+                "sl_atr_mult": sl_atr_mult,
+                "trailing_sl_enabled": trailing,
             }
             trades_df = await run_single_backtest(params, symbols=watchlist, since=since_ts)
             m = compute_metrics(trades_df, initial_capital=base_config.get("risk", {}).get("capital", 1000))
@@ -150,7 +151,8 @@ async def main():
                 "params": params,
             }
             results.append(res_entry)
-            print(f"{scenario_name:<12} | {min_conf:<8} | {min_conf_no_struct:<9} | {str(min_score):<7} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
+            sl_label = f"{sl_atr_mult}"
+            print(f"{scenario_name:<15} | {min_conf:<8} | {min_conf_no_struct:<9} | {sl_label:<6} | {m['trades']:<6} | {m['winrate']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['pnl_total']:>7.2f}% | {m['max_drawdown']:>5.1f}% | {m['sharpe']:>5.2f}")
 
     # MTF scenarios block removed
 
