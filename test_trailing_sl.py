@@ -54,16 +54,20 @@ class TestTrailingSL(unittest.IsolatedAsyncioTestCase):
 
     async def test_trailing_sl_logic(self):
         import trade_manager
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         config = get_config()
-        # Inject mocks
+        config["risk"]["trailing_sl_enabled"] = True
+        config["risk"]["trailing_sl_activation_tp"] = 0
+        config["risk"]["trailing_sl_atr_mult"] = 2.0
+        trade_manager.db = MagicMock()
+        async def mock_send_telegram(x, cfg):
+            pass
+        trade_manager.send_telegram = mock_send_telegram
+        # Patcher les noms locaux dans trade_manager (créés par from X import Y)
         trade_manager.init_exchange_async = mock_init_exchange_async
         trade_manager.fetch_all_async = mock_fetch_all_async
         trade_manager.compute_indicators = mock_compute_indicators
-        trade_manager.db = MagicMock()
-        async def mock_send_telegram(x, cfg):
-            print(f"TELEGRAM: {x}")
-        trade_manager.send_telegram = mock_send_telegram
+        trade_manager.clean_ohlcv = lambda df: df  # passthrough identity
         
         # Initial position
         pos = {
@@ -92,6 +96,74 @@ class TestTrailingSL(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(updated_pos["exit_price"], 170.0) # 180 should be the hit price
         print(f"Final SL before exit: {updated_pos['sl']}")
         print(f"Exit Price: {updated_pos['exit_price']}")
+
+    async def test_trailing_sl_logic_short(self):
+        """Cas SHORT symétrique : le SL doit descendre avec le prix et déclencher
+        la fermeture quand le prix remonte au-dessus du SL trailing."""
+        import trade_manager
+        from unittest.mock import MagicMock
+
+        config = get_config()
+        config["risk"]["trailing_sl_enabled"] = True
+        config["risk"]["trailing_sl_activation_tp"] = 0
+        config["risk"]["trailing_sl_atr_mult"] = 2.0
+
+        trade_manager.db = MagicMock()
+
+        async def mock_send_telegram(x, cfg):
+            pass
+        trade_manager.send_telegram = mock_send_telegram
+
+        async def mock_fetch_short(exchange, symbols=None, use_cache=True):
+            # Prix descendent de 200 à 100, dernier candle remonte à 125
+            n = 100
+            dates = pd.date_range(start="2023-01-01", periods=n, freq="4h", tz="UTC")
+            prices = np.linspace(200, 100, n)
+            prices[-1] = 125  # remontée qui doit toucher le SL
+            df = pd.DataFrame({
+                "timestamp": dates,
+                "open": prices,
+                "high": prices + 1,
+                "low": prices - 1,
+                "close": prices,
+                "volume": [1000] * n,
+                "atr": [10] * n
+            })
+            df["is_closed"] = True
+            return {symbols[0]: df}
+
+        trade_manager.init_exchange_async = mock_init_exchange_async
+        trade_manager.fetch_all_async = mock_fetch_short
+        trade_manager.compute_indicators = mock_compute_indicators
+        trade_manager.clean_ohlcv = lambda df: df
+
+        # Position SHORT : entrée à 200, SL initial à 220
+        pos = {
+            "id": 2,
+            "symbol": "BTC/USDT",
+            "direction": "SHORT",
+            "entry": 200.0,
+            "sl": 220.0,
+            "tp1": 50.0,   # loin pour éviter TP1 avant trailing SL
+            "tp2": 10.0,
+            "quantity": 0.1,
+            "entry_date": "2022-12-31T20:00:00Z",
+            "status": "active",
+            "partial_exit": False,
+            "sl_order_id": "old_id_short"
+        }
+
+        # Prices descend jusqu'à 100 (n-2).
+        # À close=100, SL = 100 + (10 * 2) = 120.
+        # Au dernier candle, close=125, high=126 >= 120 → SL touché.
+
+        updated_pos = await check_position(pos, config)
+
+        self.assertEqual(updated_pos["status"], "closed")
+        self.assertEqual(updated_pos["exit_reason"], "SL")
+        self.assertLessEqual(updated_pos["exit_price"], 130.0)  # SL ≈ 120
+        print(f"[SHORT] Final SL before exit: {updated_pos['sl']}")
+        print(f"[SHORT] Exit Price: {updated_pos['exit_price']}")
 
 if __name__ == "__main__":
     unittest.main()

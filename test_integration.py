@@ -92,7 +92,7 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
     @patch("trade_manager.fetch_all_async")
     @patch("trade_manager.compute_indicators")
     @patch("bot_telegram.analyze_all")
-    @patch("execution.get_exchange")
+    @patch("execution.init_trading_exchange")
     @patch("bot_telegram.reload_config")
     @patch("bot_telegram.get_config")
     @patch("trade_manager.get_config")
@@ -155,25 +155,32 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(positions), 1)
         
         # ─── SCAN 2: TP1 + Trailing ───
+        # Dans le flux réel, main() appelle manage_positions() ET run_scan_cycle() à chaque cycle.
+        # C'est manage_positions() → check_position() qui met à jour le trailing SL.
+        # Le test doit reproduire ce flux explicitement.
         new_timestamp = datetime.now(timezone.utc) + timedelta(minutes=10)
         new_candle = mock_data.iloc[-1].copy()
         new_candle["timestamp"] = new_timestamp
-        new_candle["close"] = 210 # Trails to 190
+        new_candle["close"] = 210 # Trails to 190 (210 - 10*2 = 190)
         new_candle["high"] = 215
         new_candle["low"] = 205
         new_data = pd.concat([mock_data, pd.DataFrame([new_candle])], ignore_index=True)
-        
+
         mock_fetch.return_value = {"BTC/USDT": new_data}
         mock_tm_fetch.return_value = {"BTC/USDT": new_data}
         mock_tm_indicators.return_value = new_data
         mock_bot_analyze.return_value = {"BTC/USDT": {"df": new_data, "indicators_ok": True, "daily_trend": None}}
-        
-        await bot_telegram.run_scan_cycle()
-        
+
+        # manage_positions() → check_position() → trailing SL mis à jour
+        # On mocke sync_all et init_exchange_async dans trade_manager pour éviter les appels réseau
+        with patch("trade_manager.sync_all"), \
+             patch("trade_manager.init_exchange_async", return_value=mock_exchange):
+            await trade_manager.manage_positions()
+
         updated_positions = trade_manager.load_positions()
         self.assertEqual(len(updated_positions), 1)
         self.assertEqual(updated_positions[0]["sl"], 190.0)
-        
+
         # ─── SCAN 3: Sortie SL ───
         final_timestamp = datetime.now(timezone.utc) + timedelta(minutes=20)
         final_candle = new_candle.copy()
@@ -182,18 +189,20 @@ class TestIntegrationBot(unittest.IsolatedAsyncioTestCase):
         final_candle["high"] = 185
         final_candle["low"] = 175
         final_data = pd.concat([new_data, pd.DataFrame([final_candle])], ignore_index=True)
-        
+
         mock_fetch.return_value = {"BTC/USDT": final_data}
         mock_tm_fetch.return_value = {"BTC/USDT": final_data}
         mock_tm_indicators.return_value = final_data
         mock_bot_analyze.return_value = {"BTC/USDT": {"df": final_data, "indicators_ok": True, "daily_trend": None}}
-        
-        # Disable signal detection for final scan in bot_telegram
-        with patch("bot_telegram.scan_all", return_value=[]):
-            await bot_telegram.run_scan_cycle()
-            
-            final_positions = trade_manager.load_positions()
-            self.assertEqual(len(final_positions), 0)
+
+        # manage_positions() → check_position() → SL touché → position fermée
+        with patch("trade_manager.sync_all"), \
+             patch("trade_manager.init_exchange_async", return_value=mock_exchange), \
+             patch("trade_manager.cancel_exchange_orders"):
+            await trade_manager.manage_positions()
+
+        final_positions = trade_manager.load_positions()
+        self.assertEqual(len(final_positions), 0)
 
 if __name__ == "__main__":
     unittest.main()
