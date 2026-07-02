@@ -21,6 +21,7 @@ from dashboard import (
     compute_exposure,
     compute_win_rate,
 )
+from execution import fetch_positions_pnl
 
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("dashboard_api")
@@ -109,7 +110,7 @@ async def get_dashboard_data():
         unrealized_pnl = compute_unrealized_pnl(active_positions, tickers)
         exposure_usd, expo_pct = compute_exposure(active_positions, tickers, equity)
 
-        dd_jour = db.get_realized_pnl_today()
+        dd_jour = db.get_realized_pnl_today(initial_capital=equity)
         dd_limit = risk_cfg.get("daily_loss_limit", -5.0)
         max_expo = risk_cfg.get("max_exposure", 30)
 
@@ -117,17 +118,30 @@ async def get_dashboard_data():
         win_rate, wins, nb_trades = compute_win_rate(closed_positions)
         is_breached = await check_circuit_breaker(config)
 
+        # Récupérer le PnL réel depuis Binance (inclut levier, funding, frais)
+        binance_pnl = await fetch_positions_pnl()
+
         positions_out = []
         for sym, pos in active_positions.items():
             entry = pos.get("entry_price") or pos.get("entry") or 0
             sl = pos.get("sl_price") or pos.get("sl") or 0
             price = tickers.get(sym, {}).get("last", entry)
-            pnl_pct = (
-                (price - entry) / entry * 100
-                if entry > 0 and pos["direction"] == "LONG"
-                else (entry - price) / entry * 100 if entry > 0 else 0.0
-            )
             sl_dist = abs(price - sl) / price * 100 if price > 0 else 0.0
+
+            # Utiliser le PnL réel de Binance si disponible
+            bpos = binance_pnl.get(sym)
+            if bpos and bpos["pnl_pct"] is not None:
+                pnl_pct = bpos["pnl_pct"]
+                leverage = bpos["leverage"]
+            else:
+                # Fallback : calcul local (sans levier)
+                pnl_pct = (
+                    (price - entry) / entry * 100
+                    if entry > 0 and pos["direction"] == "LONG"
+                    else (entry - price) / entry * 100 if entry > 0 else 0.0
+                )
+                leverage = None
+
             positions_out.append({
                     "symbol": sym,
                     "direction": pos["direction"],
@@ -138,6 +152,7 @@ async def get_dashboard_data():
                     "partial_exit": bool(pos.get("partial_exit")),
                     "current_price": price,
                     "pnl_pct": round(pnl_pct, 2),
+                    "leverage": round(leverage, 1) if leverage is not None else None,
                     "sl_distance_pct": round(sl_dist, 2),
                     "sl_warning": sl_dist < 1.0,
                 })

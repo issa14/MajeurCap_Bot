@@ -21,6 +21,7 @@ from database import db
 from logging.handlers import RotatingFileHandler
 from telegram_utils import send_telegram
 from dashboard import get_exchange
+from execution import fetch_positions_pnl
 
 # ─── Déduplication des signaux ───────────────────────────────────────────────
 # Mémorise le dernier envoi Telegram par symbole pour éviter le spam
@@ -95,6 +96,8 @@ async def build_status_message() -> str:
     """
     Construit un message de statut concis pour le heartbeat et la commande /status.
     Retourne une chaîne HTML listant les positions actives avec PnL temps réel.
+    Utilise fetch_positions_pnl() pour avoir le PnL réel depuis Binance (inclut levier, funding, frais).
+    Fallback sur le calcul local si l'API Binance échoue.
     Retourne None si aucune position active (pas d'envoi inutile).
     """
     config = get_config()
@@ -115,6 +118,10 @@ async def build_status_message() -> str:
     finally:
         await exchange.close()
 
+    # Récupérer le PnL réel depuis Binance (inclut levier, funding, frais)
+    binance_pnl = await fetch_positions_pnl()
+    log.info(f"build_status_message: {len(binance_pnl)} position(s) depuis Binance")
+
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [f"📊 <b>Status positions — {now_str}</b>\n"]
 
@@ -130,28 +137,45 @@ async def build_status_message() -> str:
         tp1_status = pos.get("tp1_status", "PENDING")
 
         price = tickers.get(symbol, {}).get("last", entry)
-
-        if entry > 0:
-            pnl_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
-        else:
-            pnl_pct = 0.0
-
-        pnl_usd = (price - entry) * qty if direction == "LONG" else (entry - price) * qty
-        total_pnl_usd += pnl_usd
-
         sl_dist = abs(price - sl) / price * 100 if price > 0 else 0.0
         sl_warn = " ⚠️" if sl_dist < 1.0 else ""
 
         dir_emoji  = "🟢" if direction == "LONG" else "🔴"
-        pnl_emoji  = "✅" if pnl_pct >= 0 else "❌"
         tp1_badge  = " <i>[TP1✓]</i>" if tp1_status == "FILLED" else ""
 
-        lines.append(
-            f"{dir_emoji} <b>{symbol}</b>{tp1_badge}\n"
-            f"  Entry: <code>{entry}</code> → Now: <code>{price:.4f}</code>\n"
-            f"  PnL: {pnl_emoji} <b>{pnl_pct:+.2f}%</b> ({pnl_usd:+.2f} USDT)\n"
-            f"  SL: {sl_dist:.1f}%{sl_warn} | TP1: <code>{tp1}</code> | TP2: <code>{tp2}</code>"
-        )
+        # Utiliser le PnL réel de Binance si disponible (inclut levier, funding, frais)
+        bpos = binance_pnl.get(symbol)
+        if bpos and bpos["pnl_pct"] is not None:
+            pnl_pct = bpos["pnl_pct"]
+            pnl_usd = bpos["pnl_usd"] if bpos["pnl_usd"] is not None else 0.0
+            leverage = bpos["leverage"]
+            pnl_emoji  = "✅" if pnl_pct >= 0 else "❌"
+            total_pnl_usd += pnl_usd
+
+            lines.append(
+                f"{dir_emoji} <b>{symbol}</b>{tp1_badge}\n"
+                f"  Entry: <code>{entry}</code> → Now: <code>{price:.4f}</code>\n"
+                f"  PnL: {pnl_emoji} <b>{pnl_pct:+.2f}%</b> ({pnl_usd:+.2f} USDT) | Levier: {leverage:.0f}x\n"
+                f"  Qty: {bpos['qty']:.6f} | SL: {sl_dist:.1f}%{sl_warn} | TP1: <code>{tp1}</code> | TP2: <code>{tp2}</code>"
+            )
+        else:
+            # Fallback : calcul local (sans levier)
+            if entry > 0:
+                pnl_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+            else:
+                pnl_pct = 0.0
+
+            pnl_usd = (price - entry) * qty if direction == "LONG" else (entry - price) * qty
+            total_pnl_usd += pnl_usd
+
+            pnl_emoji  = "✅" if pnl_pct >= 0 else "❌"
+
+            lines.append(
+                f"{dir_emoji} <b>{symbol}</b>{tp1_badge} ⚠️ PnL local\n"
+                f"  Entry: <code>{entry}</code> → Now: <code>{price:.4f}</code>\n"
+                f"  PnL: {pnl_emoji} <b>{pnl_pct:+.2f}%</b> ({pnl_usd:+.2f} USDT)\n"
+                f"  SL: {sl_dist:.1f}%{sl_warn} | TP1: <code>{tp1}</code> | TP2: <code>{tp2}</code>"
+            )
 
     pnl_total_emoji = "✅" if total_pnl_usd >= 0 else "❌"
     lines.append(f"\n{pnl_total_emoji} PnL latent total : <b>{total_pnl_usd:+.2f} USDT</b>")

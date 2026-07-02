@@ -134,14 +134,14 @@ async def get_dashboard_text() -> str:
         unrealized_pnl         = compute_unrealized_pnl(active_positions, tickers)
         exposure_usd, expo_pct = compute_exposure(active_positions, tickers, equity)
 
-        dd_jour   = db.get_realized_pnl_today()
+        dd_jour   = db.get_realized_pnl_today(initial_capital=equity)
         dd_limit  = risk_cfg.get("daily_loss_limit", -5.0)
         max_expo  = risk_cfg.get("max_exposure", 30)
 
         realized_pnl          = sum(p.get("pnl_pct", 0) for p in closed_positions)
         win_rate, wins, nb_trades = compute_win_rate(closed_positions)
 
-        is_breached  = await check_circuit_breaker(config)
+        is_breached  = await check_circuit_breaker(config, capital_override=equity)
 
         # ── En-tête ──────────────────────────────────────────────────────────
         status_icon  = "🚨" if is_breached else "✅"

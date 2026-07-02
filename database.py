@@ -1,6 +1,6 @@
 import sqlite3
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 log = logging.getLogger("database")
@@ -238,7 +238,12 @@ class DatabaseManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def get_realized_pnl_today(self, initial_capital: float = 1000.0) -> float:
-        """Calcule la somme des PnL réalisés (%) de la journée en pondérant par le capital."""
+        """Calcule la somme des PnL réalisés (%) de la journée en pondérant par le capital.
+        
+        initial_capital: capital à utiliser pour la conversion USD → %. Par défaut 1000 USDT
+                         pour backward compatibility, mais les appelants doivent passer le
+                         capital live (wallet equity) pour un calcul correct du drawdown journalier.
+        """
         with self._connect() as conn:
             cursor = conn.cursor()
             today = datetime.now(timezone.utc).date().isoformat()
@@ -255,6 +260,47 @@ class DatabaseManager:
             
             # Conversion en pourcentage basé sur le capital initial
             return (realized_pnl_usd / initial_capital) * 100 if initial_capital != 0 else 0.0
+
+    def get_closed_positions(self, limit: int = 10) -> list:
+        """Récupère l'historique des positions fermées les plus récentes.
+        
+        Retourne : symbole, dates, prix, PnL, raison de sortie.
+        limit: nombre max de positions à retourner (défaut: 10).
+        Utilisé par la commande /trades Telegram.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT symbol, direction, entry_price, exit_price, exit_date,
+                       exit_reason, pnl_pct, pnl_usd, quantity, entry_date
+                FROM positions
+                WHERE status = 'closed'
+                ORDER BY exit_date DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def cleanup_old_records(self, days: int = 30) -> None:
+        """Supprime les vieux enregistrements pour éviter la croissance illimitée de la DB.
+        
+        Appelé au démarrage du bot et périodiquement. Supprime :
+          - signals_log plus vieux que `days` jours
+          - signal_cooldowns plus vieux que `days` jours
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connect() as conn:
+            deleted_signals = conn.execute(
+                "DELETE FROM signals_log WHERE detected_at < ?", (cutoff,)
+            ).rowcount
+            deleted_cooldowns = conn.execute(
+                "DELETE FROM signal_cooldowns WHERE last_sent_at < ?", (cutoff,)
+            ).rowcount
+            if deleted_signals or deleted_cooldowns:
+                log.info(
+                    f"Nettoyage DB : {deleted_signals} signal(s) supprimé(s), "
+                    f"{deleted_cooldowns} cooldown(s) supprimé(s)"
+                )
 
 # Instance globale pour simplicité (ou à injecter)
 db = DatabaseManager()

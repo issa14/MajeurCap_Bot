@@ -87,13 +87,19 @@ def load_positions() -> list:
     return positions
 
 # ─── Annulation des ordres exchange lors d'une clôture ───────────────────────
-async def cancel_exchange_orders(symbol: str, pos: dict) -> None:
+async def cancel_exchange_orders(symbol: str, pos: dict, config: Optional[dict] = None) -> None:
     """
     Annule tous les ordres ouverts liés à une position sur l'exchange (SL, TP1, TP2).
     Appelé systématiquement à la clôture pour éviter les ordres orphelins.
     Chaque annulation est indépendante — une erreur n'en bloque pas une autre.
+    Mécanisme de retry (3 tentatives) + alerte Telegram si échec persistant.
+
+    Note : l'API Binance Futures nécessite le symbole au format "BTC/USDT:USDT"
+    pour cancel_order, alors que la DB stocke "BTC/USDT". On normalise automatiquement.
     """
-    auto_exec = get_config().get("execution", {}).get("auto_execute", False)
+    if config is None:
+        config = get_config()
+    auto_exec = config.get("execution", {}).get("auto_execute", False)
     if not auto_exec:
         return
 
@@ -103,16 +109,48 @@ async def cancel_exchange_orders(symbol: str, pos: dict) -> None:
         "TP2": pos.get("tp2_order_id"),
     }
 
+    # Normaliser le symbole pour Binance Futures : "BTC/USDT" → "BTC/USDT:USDT"
+    exchange_symbol = f"{symbol}:USDT" if symbol.endswith('/USDT') else symbol
+
+    max_retries = 3
     exchange = await init_trading_exchange()
     try:
         for label, order_id in order_ids.items():
             if not order_id:
                 continue
-            try:
-                await exchange.cancel_order(order_id, symbol)
-                log.info(f"{symbol} — ordre {label} ({order_id}) annulé sur l'exchange")
-            except Exception as e:
-                log.warning(f"{symbol} — impossible d'annuler ordre {label} ({order_id}): {e}")
+
+            last_error = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await exchange.cancel_order(order_id, exchange_symbol)
+                    log.info(f"{symbol} — ordre {label} ({order_id}) annulé sur l'exchange (tentative {attempt})")
+                    last_error = None
+                    break
+                except (ccxt_async.NetworkError, ccxt_async.RequestTimeout, asyncio.TimeoutError) as e:
+                    last_error = e
+                    log.warning(
+                        f"{symbol} — tentative {attempt}/{max_retries} échouée "
+                        f"annulation ordre {label} ({order_id}): {e}"
+                    )
+                    if attempt < max_retries:
+                        await asyncio.sleep(2 * attempt)  # backoff progressif
+                except Exception as e:
+                    last_error = e
+                    log.warning(f"{symbol} — impossible d'annuler ordre {label} ({order_id}): {e}")
+                    break  # erreur non réseau, pas de retry
+
+            if last_error:
+                log.error(
+                    f"{symbol} — ÉCHEC annulation ordre {label} ({order_id}) "
+                    f"après {max_retries} tentatives: {last_error}"
+                )
+                asyncio.create_task(send_telegram(
+                    f"🚨 URGENT {symbol} — Impossible d'annuler l'ordre {label} "
+                    f"({order_id}) sur l'exchange après {max_retries} tentatives.\n"
+                    f"Erreur : {last_error}\n"
+                    f"⚠️ Vérifier manuellement sur Binance.",
+                    config
+                ))
     finally:
         await exchange.close()
 
@@ -270,7 +308,7 @@ async def check_position(pos: dict, config: dict, exchange=None) -> Optional[dic
 
     if exit_reason:
         # Annuler tous les ordres restants sur l'exchange (évite les ordres orphelins)
-        asyncio.create_task(cancel_exchange_orders(symbol, pos))
+        asyncio.create_task(cancel_exchange_orders(symbol, pos, config))
 
         pos["status"] = "closed"
         pos["exit_reason"] = exit_reason
@@ -353,30 +391,59 @@ async def reconcile_positions_on_startup() -> None:
                 binance_by_normalized[norm] = p
     except Exception as e:
         log.error(f"reconcile_on_startup : impossible de récupérer les positions Binance ({e})")
-        # await exchange.close()  # Redundant; handled in finally
+        await exchange.close()
         return
+
+    try:
+        # 3. Cas A — Position active en DB mais absente sur Binance
+        for norm_sym, db_sym in db_symbols_normalized.items():
+            if norm_sym not in binance_by_normalized:
+                pos = db_positions[db_sym]
+                log.warning(
+                    f"RECONCILE {db_sym} — active en DB (id={pos['id']}) mais ABSENTE sur Binance. "
+                    f"Interrogation de l'historique des ordres pour identifier la sortie..."
+                )
+                raw_symbol = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
+                exit_info = await _detect_exit_from_binance(exchange, raw_symbol, pos, config)
+
+                if exit_info:
+                    log.warning(
+                        f"RECONCILE {db_sym} — fermeture détectée via historique ordres: "
+                        f"{exit_info['exit_reason']} à {exit_info['exit_price']}"
+                    )
+                    db.update_position(pos["id"], {
+                        "status": "closed",
+                        "exit_reason": exit_info["exit_reason"],
+                        "exit_price": exit_info["exit_price"],
+                        "exit_date": datetime.now(timezone.utc).isoformat(),
+                        "pnl_usd": exit_info["pnl_usd"],
+                        "pnl_pct": exit_info["pnl_pct"],
+                    })
+                    emoji = "✅" if exit_info["pnl_pct"] > 0 else "❌"
+                    await send_telegram(
+                        f"{emoji} RECONCILE {db_sym} — Fermée ({exit_info['exit_reason']})\n"
+                        f"Prix sortie : {exit_info['exit_price']}\n"
+                        f"PnL : {exit_info['pnl_pct']:+.2f}%",
+                        config,
+                    )
+                else:
+                    log.warning(
+                        f"RECONCILE {db_sym} — active in DB but missing on Binance, "
+                        f"aucun historique ordre disponible. Marking closed."
+                    )
+                    db.update_position(pos["id"], {
+                        "status": "closed",
+                        "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
+                        "exit_date": datetime.now(timezone.utc).isoformat(),
+                    })
+                    await send_telegram(
+                        f"⚠️ RECONCILE {db_sym} — Position active en DB mais introuvable sur Binance.\n"
+                        f"Marquée closed automatiquement (aucun historique ordre disponible).\n"
+                        f"Entry: {pos.get('entry_price')} | Direction: {pos.get('direction')}",
+                        config
+                    )
     finally:
         await exchange.close()
-
-    # 3. Cas A — Position active en DB mais absente sur Binance
-    for norm_sym, db_sym in db_symbols_normalized.items():
-        if norm_sym not in binance_by_normalized:
-            pos = db_positions[db_sym]
-            log.warning(
-                f"RECONCILE {db_sym} — active en DB (id={pos['id']}) mais ABSENTE sur Binance. "
-                f"Marquée closed (SL/TP probablement déclenché hors surveillance)."
-            )
-            db.update_position(pos["id"], {
-                "status": "closed",
-                "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
-                "exit_date": datetime.now(timezone.utc).isoformat(),
-            })
-            await send_telegram(
-                f"⚠️ RECONCILE {db_sym} — Position active en DB mais introuvable sur Binance.\n"
-                f"Marquée closed automatiquement (SL/TP déclenché hors surveillance du bot).\n"
-                f"Entry: {pos.get('entry_price')} | Direction: {pos.get('direction')}",
-                config
-            )
 
     # 4. Cas B — Position sur Binance mais absente en DB → alerte SANS insertion
     # (pas d'insertion automatique pour éviter les doublons et les réouvertures en cascade)
@@ -400,6 +467,98 @@ async def reconcile_positions_on_startup() -> None:
             )
 
     log.info("=== Réconciliation terminée ===")
+
+async def _detect_exit_from_binance(
+    exchange: ccxt_async.binance,
+    symbol: str,
+    pos: dict,
+    config: dict,
+) -> Optional[dict]:
+    """
+    Interroge l'historique des ordres Binance pour déterminer la vraie raison
+    de sortie (SL/TP1/TP2) quand une position active en DB est absente sur l'exchange.
+
+    Retourne un dict {exit_reason, exit_price, pnl_usd, pnl_pct} ou None si impossible.
+    """
+    try:
+        orders = await exchange.fetch_orders(symbol, limit=15)
+        filled = [
+            o for o in orders
+            if o.get("status") in ("closed", "filled")
+            and o.get("filled", 0) > 0
+            and (
+                o.get("reduceOnly") is True
+                or o.get("info", {}).get("reduceOnly") == "true"
+            )
+        ]
+    except Exception as e:
+        log.warning(f"{symbol} — échec récupération historique ordres : {e}")
+        return None
+
+    if not filled:
+        log.warning(f"{symbol} — aucun ordre filled reduceOnly trouvé dans l'historique")
+        return None
+
+    # Binance allOrders retourne par date croissante (ancien → récent).
+    # Avec limit=15, le dernier élément est l'ordre le plus récent.
+    last = filled[-1]
+    stop_price = last.get("stopPrice")
+    if stop_price is None:
+        stop_price = last.get("info", {}).get("stopPrice")
+    if stop_price is not None:
+        stop_price = float(stop_price)
+
+    exit_price = last.get("average") or last.get("price") or last.get("cost")
+    if exit_price is not None:
+        try:
+            exit_price = float(exit_price)
+        except (ValueError, TypeError):
+            exit_price = stop_price
+    if exit_price is None or exit_price == 0:
+        exit_price = stop_price
+
+    filled_qty = float(last.get("filled", 0))
+    direction = pos["direction"]
+    entry = pos.get("entry") or pos.get("entry_price") or 0
+    sl = pos.get("sl") or pos.get("sl_price") or 0
+    tp1 = pos.get("tp1") or pos.get("tp1_price") or 0
+    tp2 = pos.get("tp2") or pos.get("tp2_price") or 0
+
+    # Identifier la raison de sortie par comparaison du stopPrice
+    exit_reason = "BINANCE_FILL"
+    if stop_price and stop_price > 0:
+        tol = 0.003  # 0.3 % de tolérance pour les arrondis Binance
+        if sl > 0 and abs(stop_price - sl) / sl < tol:
+            exit_reason = "SL"
+        elif tp2 > 0 and abs(stop_price - tp2) / tp2 < tol:
+            exit_reason = "TP2"
+        elif tp1 > 0 and abs(stop_price - tp1) / tp1 < tol:
+            exit_reason = "TP1"
+
+    if exit_price is None or exit_price == 0:
+        exit_price = stop_price or entry
+
+    # PnL simple (100 % de la qty — pas de sortie partielle détectable ici)
+    full_qty = pos.get("quantity") or filled_qty
+    if direction == "LONG":
+        pnl_usd = (exit_price - entry) * full_qty
+        pnl_pct = (exit_price - entry) / entry * 100 if entry != 0 else 0
+    else:
+        pnl_usd = (entry - exit_price) * full_qty
+        pnl_pct = (entry - exit_price) / entry * 100 if entry != 0 else 0
+
+    log.info(
+        f"{symbol} — Sortie détectée via Binance: {exit_reason} "
+        f"prix={exit_price:.4f} stopPrice={stop_price} PnL={pnl_pct:+.2f}%"
+    )
+
+    return {
+        "exit_reason": exit_reason,
+        "exit_price": round(exit_price, 8),
+        "pnl_usd": round(pnl_usd, 4),
+        "pnl_pct": round(pnl_pct, 2),
+    }
+
 
 async def sync_all(config: dict, exchange=None) -> None:
     """
@@ -462,18 +621,41 @@ async def sync_all(config: dict, exchange=None) -> None:
             tp2_price = pos.get("tp2_price") or pos.get("tp2") or 0
             db_qty    = pos.get("current_quantity") or pos.get("quantity") or 0
 
-            # ── Cas A : position DB absente de Binance → closed ─────────
+            # ── Cas A : position DB absente de Binance → déterminer la vraie raison ──
             if norm_sym not in binance_by_norm:
-                log.warning(f"sync_all {db_sym} — absente de Binance, marquée closed")
-                db.update_position(pos_id, {
-                    "status": "closed",
-                    "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
-                    "exit_date": datetime.now(timezone.utc).isoformat(),
-                })
-                asyncio.create_task(send_telegram(
-                    f"⚠️ {db_sym} — Position fermée (disparue de Binance, SL/TP probablement déclenché hors surveillance).",
-                    config
-                ))
+                raw_symbol = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
+                exit_info = await _detect_exit_from_binance(exchange, raw_symbol, pos, config)
+
+                if exit_info:
+                    log.warning(
+                        f"sync_all {db_sym} — fermeture détectée via historique ordres: "
+                        f"{exit_info['exit_reason']} à {exit_info['exit_price']}"
+                    )
+                    db.update_position(pos_id, {
+                        "status": "closed",
+                        "exit_reason": exit_info["exit_reason"],
+                        "exit_price": exit_info["exit_price"],
+                        "exit_date": datetime.now(timezone.utc).isoformat(),
+                        "pnl_usd": exit_info["pnl_usd"],
+                        "pnl_pct": exit_info["pnl_pct"],
+                    })
+                    emoji = "✅" if exit_info["pnl_pct"] > 0 else "❌"
+                    asyncio.create_task(send_telegram(
+                        f"{emoji} {db_sym} {direction} clôturé ({exit_info['exit_reason']})\n"
+                        f"Prix sortie : {exit_info['exit_price']}\nPnL : {exit_info['pnl_pct']:+.2f}%",
+                        config
+                    ))
+                else:
+                    log.warning(f"sync_all {db_sym} — absente de Binance, aucun historique ordre disponible, marquée closed")
+                    db.update_position(pos_id, {
+                        "status": "closed",
+                        "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
+                        "exit_date": datetime.now(timezone.utc).isoformat(),
+                    })
+                    asyncio.create_task(send_telegram(
+                        f"⚠️ {db_sym} — Position fermée (disparue de Binance, aucun historique ordre disponible).",
+                        config
+                    ))
                 continue
 
             bpos = binance_by_norm[norm_sym]
@@ -575,7 +757,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                     exit_reason = label  # "SL", "TP1", ou "TP2"
 
                     # Annuler les autres ordres restants
-                    asyncio.create_task(cancel_exchange_orders(db_sym, pos))
+                    asyncio.create_task(cancel_exchange_orders(db_sym, pos, config))
 
                     # Calculer le PnL
                     entry = pos.get("entry_price") or pos.get("entry") or 0
@@ -670,9 +852,12 @@ async def manage_positions():
             await check_position(pos, config, exchange=exchange)
 
         # Sync unifiée DB ↔ Binance (remplace sync_position_with_exchange + verify_active_orders)
+        # NB : sync_all a besoin d'un exchange AUTHENTIFIÉ (fetch_positions/fetch_open_orders/
+        # create_order sont des endpoints privés) — on ne lui passe pas l'exchange public
+        # utilisé pour les données de marché ; il initialisera son propre init_trading_exchange().
         if auto_exec:
             try:
-                await sync_all(config, exchange=exchange)
+                await sync_all(config)
             except Exception as e:
                 log.error(f"sync_all — erreur inattendue : {e}", exc_info=True)
     finally:
@@ -681,13 +866,18 @@ async def manage_positions():
     log.info(f"Positions mises à jour : {len(db.get_active_positions())} ouvertes")
 
 # ─── Ouverture de position (avec sizing et exécution automatique) ────────────
-async def check_circuit_breaker(config: dict) -> bool:
-    """Retourne True si le bot est bloqué (emergency stop)."""
+async def check_circuit_breaker(config: dict, capital_override: float = None) -> bool:
+    """Retourne True si le bot est bloqué (emergency stop).
+
+    capital_override: capital live (wallet equity) pour un calcul correct du % de drawdown.
+                      Si None, utilise config['risk']['capital'] (fallback 1000).
+    """
     global _circuit_breaker_alerted
     risk_cfg = config.get("risk", {})
     daily_loss_limit = risk_cfg.get("daily_loss_limit", -5.0)
+    capital = capital_override if capital_override is not None else risk_cfg.get("capital", 1000.0)
 
-    realized_pnl_pct = db.get_realized_pnl_today()
+    realized_pnl_pct = db.get_realized_pnl_today(initial_capital=capital)
 
     if realized_pnl_pct <= daily_loss_limit:
         msg = f"🚨 <b>EMERGENCY STOP</b> - Drawdown journalier atteint : {realized_pnl_pct:.2f}% (Seuil: {daily_loss_limit}%)"
@@ -704,7 +894,22 @@ async def open_position(signal: dict, config: dict) -> dict:
     positions = load_positions()
     symbol = signal["symbol"]
 
-    if await check_circuit_breaker(config):
+    risk_cfg = config.get("risk", {})
+
+    # Capital live depuis l'exchange — DOIT précéder check_circuit_breaker qui en a besoin
+    live_capital = risk_cfg.get("capital", 1000)
+    try:
+        exch_tmp = await init_trading_exchange()
+        try:
+            bal = await exch_tmp.fetch_balance()
+            live_capital = bal["free"].get("USDT", live_capital)
+            log.info(f"Capital live récupéré : {live_capital:.2f} USDT")
+        finally:
+            await exch_tmp.close()
+    except Exception as e:
+        log.warning(f"Impossible de récupérer le solde live, fallback config ({e})")
+
+    if await check_circuit_breaker(config, capital_override=live_capital):
         return {"success": False, "reason": "Circuit breaker déclenché"}
 
     for p in positions:
@@ -720,21 +925,6 @@ async def open_position(signal: dict, config: dict) -> dict:
             "current": get_active_positions_count(positions),
             "limit": max_pos
         }
-
-    risk_cfg = config.get("risk", {})
-    
-    # Capital live depuis l'exchange
-    live_capital = risk_cfg.get("capital", 1000)
-    try:
-        exch_tmp = await init_trading_exchange()
-        try:
-            bal = await exch_tmp.fetch_balance()
-            live_capital = bal["free"].get("USDT", live_capital)
-            log.info(f"Capital live récupéré : {live_capital:.2f} USDT")
-        finally:
-            await exch_tmp.close()
-    except Exception as e:
-        log.warning(f"Impossible de récupérer le solde live, fallback config ({e})")
 
     max_exposure_pct = risk_cfg.get("max_exposure", 30.0)
     current_exp = get_current_exposure_pct(positions, live_capital)
@@ -809,6 +999,201 @@ async def open_position(signal: dict, config: dict) -> dict:
 
     log.info(f"Nouvelle position ouverte : {symbol} {signal['direction']} qty={quantity}")
     return {"success": True, "quantity": quantity}
+
+
+# ─── PnL Summary ──────────────────────────────────────────────────────────────
+async def get_pnl_summary(config: dict) -> dict:
+    """
+    Calcule le PnL (Profit and Loss) pour toutes les positions :
+      - PnL réalisé (positions fermées)
+      - PnL non réalisé (positions ouvertes)
+      - PnL total
+    Formatage des résultats pour affichage Telegram.
+    Utilise fetch_positions_pnl() pour avoir le PnL réel depuis Binance si dispo.
+    """
+    from execution import fetch_positions_pnl
+
+    all_positions = db.get_all_positions()
+    closed = [p for p in all_positions if p.get("status") == "closed"]
+    active = [p for p in all_positions if p.get("status") != "closed"]
+
+    # PnL réalisé (positions fermées)
+    realized_pnl_usd = sum(p.get("pnl_usd") or 0 for p in closed)
+    realized_pnl_pct = sum(p.get("pnl_pct") or 0 for p in closed)
+    win_count = sum(1 for p in closed if (p.get("pnl_pct") or 0) > 0)
+    loss_count = sum(1 for p in closed if (p.get("pnl_pct") or 0) <= 0)
+
+    # PnL non réalisé (positions ouvertes) via Binance si possible
+    unrealized_pnl_usd = 0.0
+    unrealized_details = []
+    try:
+        binance_pnl = await fetch_positions_pnl()
+        for pos in active:
+            sym = pos["symbol"]
+            bpos = binance_pnl.get(sym)
+            if bpos and bpos["pnl_usd"] is not None:
+                pnl_usd = bpos["pnl_usd"]
+                pnl_pct = bpos["pnl_pct"]
+                entry = pos.get("entry_price") or pos.get("entry") or 0
+                unrealized_details.append({
+                    "symbol": sym,
+                    "direction": pos["direction"],
+                    "entry": entry,
+                    "pnl_usd": pnl_usd,
+                    "pnl_pct": pnl_pct,
+                    "leverage": bpos.get("leverage"),
+                })
+                unrealized_pnl_usd += pnl_usd
+            else:
+                # Fallback local
+                entry = pos.get("entry_price") or pos.get("entry") or 0
+                qty = pos.get("current_quantity") or pos.get("quantity") or 0
+                price = pos.get("exit_price") or entry  # approximation
+                if entry > 0 and qty > 0:
+                    raw = (price - entry) * qty
+                    pnl_usd = raw if pos["direction"] == "LONG" else -raw
+                    pnl_pct = (pnl_usd / (entry * qty)) * 100 if entry * qty != 0 else 0.0
+                    unrealized_details.append({
+                        "symbol": sym,
+                        "direction": pos["direction"],
+                        "entry": entry,
+                        "pnl_usd": pnl_usd,
+                        "pnl_pct": pnl_pct,
+                        "leverage": None,
+                    })
+                    unrealized_pnl_usd += pnl_usd
+    except Exception as e:
+        log.warning(f"get_pnl_summary: impossible de récupérer le PnL Binance ({e})")
+
+    total_pnl_usd = realized_pnl_usd + unrealized_pnl_usd
+    total_pnl_pct = realized_pnl_pct  # approximation raisonnable
+
+    # Formatage Telegram
+    lines = [
+        "📊 <b>Récapitulatif PnL</b>\n",
+        f"✅ <b>Réalisé</b>  : {realized_pnl_usd:+.2f} USDT ({realized_pnl_pct:+.2f}%)",
+        f"   {win_count} gagnant(s) / {loss_count} perdant(s)",
+        f"📈 <b>Non réalisé</b> : {unrealized_pnl_usd:+.2f} USDT",
+    ]
+    if unrealized_details:
+        for d in unrealized_details:
+            lev = f" | Levier: {d['leverage']:.0f}x" if d.get("leverage") else ""
+            lines.append(
+                f"   {d['symbol']} {d['direction']} : {d['pnl_usd']:+.2f} USDT "
+                f"({d['pnl_pct']:+.2f}%){lev}"
+            )
+    lines.append(f"\n💰 <b>Total</b> : {total_pnl_usd:+.2f} USDT")
+
+    return {
+        "realized_usd": round(realized_pnl_usd, 2),
+        "realized_pct": round(realized_pnl_pct, 2),
+        "wins": win_count,
+        "losses": loss_count,
+        "unrealized_usd": round(unrealized_pnl_usd, 2),
+        "unrealized_details": unrealized_details,
+        "total_usd": round(total_pnl_usd, 2),
+        "telegram_text": "\n".join(lines),
+    }
+
+
+# ─── Fermeture de toutes les positions ────────────────────────────────────────
+async def close_all_positions_async(config: dict) -> dict:
+    """
+    Ferme toutes les positions ouvertes :
+      - Annule tous les ordres ouverts (SL/TP)
+      - Passe des ordres market pour fermer chaque position
+      - Attend la confirmation de chaque fermeture
+      - Log détaillé de chaque étape
+    Retourne un résumé {success, closed_count, errors, details}.
+    """
+    auto_exec = config.get("execution", {}).get("auto_execute", False)
+    if not auto_exec:
+        return {"success": False, "reason": "auto_execute désactivé"}
+
+    positions = load_positions()
+    active_positions = [p for p in positions if p.get("status") != "closed"]
+    if not active_positions:
+        return {"success": True, "closed_count": 0, "errors": [], "details": "Aucune position active à fermer."}
+
+    log.info(f"=== Fermeture de {len(active_positions)} position(s) ===")
+    await send_telegram(f"🔄 Fermeture de {len(active_positions)} position(s) en cours...", config)
+
+    exchange = await init_trading_exchange()
+    closed_count = 0
+    errors = []
+    details = []
+
+    try:
+        for pos in active_positions:
+            symbol = pos["symbol"]
+            direction = pos["direction"]
+            qty = pos.get("current_quantity") or pos.get("quantity") or 0
+            exchange_symbol = f"{symbol}:USDT" if symbol.endswith('/USDT') else symbol
+
+            log.info(f"{symbol} — Fermeture de la position {direction} qty={qty}")
+
+            # 1. Annuler tous les ordres ouverts (SL/TP)
+            try:
+                await cancel_exchange_orders(symbol, pos, config)
+                log.info(f"{symbol} — Ordres annulés avec succès")
+            except Exception as e:
+                log.warning(f"{symbol} — Erreur annulation ordres: {e}")
+                errors.append(f"{symbol}: cancel_orders = {e}")
+
+            # 2. Fermer la position par un ordre market inverse
+            try:
+                side = "sell" if direction == "LONG" else "buy"
+                reduce_only = True
+                order = await exchange.create_market_order(
+                    exchange_symbol,
+                    side,
+                    qty,
+                    params={"reduceOnly": reduce_only},
+                )
+                log.info(f"{symbol} — Ordre market {side} {qty} exécuté: {order.get('id')}")
+
+                # 3. Mettre à jour la DB
+                db.update_position(pos["id"], {
+                    "status": "closed",
+                    "exit_reason": "MANUAL_CLOSE_ALL",
+                    "exit_price": order.get("average") or order.get("price"),
+                    "exit_date": datetime.now(timezone.utc).isoformat(),
+                })
+                closed_count += 1
+                details.append(f"{symbol} {direction} — Fermée (market {side} {qty})")
+
+            except Exception as e:
+                log.error(f"{symbol} — Échec fermeture market: {e}")
+                errors.append(f"{symbol}: market_close = {e}")
+                await send_telegram(
+                    f"🚨 URGENT {symbol} — Échec fermeture market order!\n"
+                    f"Direction: {direction} | Qty: {qty}\n"
+                    f"Erreur: {e}\n"
+                    f"⚠️ Fermeture manuelle requise sur Binance.",
+                    config
+                )
+
+            await asyncio.sleep(1)  # rate limit
+
+    finally:
+        await exchange.close()
+
+    summary = (
+        f"✅ Fermeture en masse terminée : {closed_count}/{len(active_positions)} "
+        f"position(s) fermée(s)"
+    )
+    if errors:
+        summary += f" | {len(errors)} erreur(s)"
+    log.info(summary)
+    await send_telegram(summary, config)
+
+    return {
+        "success": len(errors) == 0,
+        "closed_count": closed_count,
+        "total": len(active_positions),
+        "errors": errors,
+        "details": "\n".join(details),
+    }
 
 
 if __name__ == "__main__":

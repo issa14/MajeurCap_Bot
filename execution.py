@@ -4,6 +4,7 @@ Utilise STOP_MARKET pour le stop-loss (futures, pas stop_loss_limit qui est spot
 Migration : set_sandbox_mode(True) → exchange.enable_demo_trading(True)
 """
 
+import asyncio
 import ccxt.async_support as ccxt_async
 import logging
 from config_loader import get_config
@@ -245,3 +246,72 @@ async def update_sl_order(
 
     finally:
         await exchange.close()   # ← toujours exécuté (fix bug fuite connexion)
+
+
+async def fetch_positions_pnl(timeout: int = 15) -> dict:
+    """
+    Récupère les positions actives depuis Binance Futures avec leur PnL réel.
+    Retourne un dict normalisé :
+    {
+        "BTC/USDT": {
+            "pnl_usd": float,    # PnL unrealized en USD (inclut funding & fees)
+            "pnl_pct": float,    # PnL% déjà avec levier (identique interface Binance)
+            "entry_price": float,
+            "qty": float,        # quantité réelle sur l'exchange
+            "leverage": float,   # levier effectif
+            "side": "long"/"short",
+            "raw": dict,         # données brutes CCXT (debug)
+        }
+    }
+    Retourne dict vide si erreur ou aucune position.
+    """
+    exchange = await init_trading_exchange()
+    try:
+        raw_positions = await asyncio.wait_for(
+            exchange.fetch_positions(),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        log.warning("fetch_positions_pnl: timeout après %ds", timeout)
+        return {}
+    except Exception as e:
+        log.warning("fetch_positions_pnl: erreur (%s)", e)
+        return {}
+    finally:
+        await exchange.close()
+
+    result = {}
+    for p in raw_positions:
+        contracts = float(p.get("contracts", 0))
+        if contracts == 0:
+            continue
+
+        norm_symbol = p["symbol"].split(":")[0]
+
+        # Binance retourne déjà le PnL% avec levier — on l'utilise tel quel
+        # NOTE: CCXT retourne 'percentage' en décimal (ex: -0.25 pour -0.25%)
+        # et 'unrealizedPnl' en USD
+        raw_pnl_pct = p.get("percentage")
+        pnl_pct = float(raw_pnl_pct) if raw_pnl_pct is not None else None
+
+        raw_pnl_usd = p.get("unrealizedPnl")
+        pnl_usd = float(raw_pnl_usd) if raw_pnl_usd is not None else None
+
+        raw_entry = p.get("entryPrice")
+        entry_price = float(raw_entry) if raw_entry is not None else None
+
+        raw_leverage = p.get("leverage")
+        leverage = float(raw_leverage) if raw_leverage is not None else None
+
+        result[norm_symbol] = {
+            "pnl_usd": pnl_usd,
+            "pnl_pct": pnl_pct,
+            "entry_price": entry_price,
+            "qty": contracts,
+            "leverage": leverage,
+            "side": p.get("side"),
+            "raw": p,
+        }
+
+    log.info("fetch_positions_pnl: %d position(s) récupérée(s) depuis Binance", len(result))
+    return result

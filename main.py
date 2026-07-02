@@ -24,6 +24,9 @@ log = logging.getLogger("DPSK")
 async def run_live():
     """Lance une itération du bot de trading."""
     from bot_telegram import main as bot_main
+    # Nettoyage DB au démarrage (signal_logs > 30 jours)
+    from database import db
+    db.cleanup_old_records(days=30)
     log.info("🚀 Démarrage du bot de trading Live (Bot Telegram)...")
     await bot_main()
 

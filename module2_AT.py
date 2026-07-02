@@ -288,24 +288,15 @@ def analyze_all(data: dict, config: dict, include_incomplete: bool = False, dail
             res = {"df": enriched, "indicators_ok": True}
 
             if daily_filter_config and daily_data:
-                btc_symbol = next((s for s in daily_data.keys() if "BTC/" in s), "BTC/USDT")
-                btc_trend = None
-                if btc_symbol in daily_data:
-                    btc_trend = compute_daily_trend(daily_data[btc_symbol], strict=daily_strict)
-
+                # Utiliser get_daily_trend_at_timestamp() qui slice les données daily
+                # de manière CAUSALE : seules les bougies daily strictement antérieures
+                # au timestamp 4h courant sont utilisées. Contrairement à compute_daily_trend()
+                # direct qui incluait la bougie daily incomplète (aujourd'hui) = look-ahead.
+                last_4h_ts = enriched.iloc[-1]["timestamp"]
                 if symbol in daily_data:
-                    symbol_trend = compute_daily_trend(daily_data[symbol], strict=daily_strict)
+                    symbol_trend = get_daily_trend_at_timestamp(symbol, last_4h_ts, daily_data, config)
                 else:
-                    symbol_trend = {"trend": "neutral", "reason": "no data"}
-
-                # Global Market Filter for altcoins based on BTC trend
-                if symbol != btc_symbol and btc_trend:
-                    if btc_trend["trend"] == "bearish" and symbol_trend["trend"] == "bullish":
-                        symbol_trend["trend"] = "neutral"
-                        symbol_trend["reason"] = "BTC is bearish"
-                    elif btc_trend["trend"] == "neutral" and daily_strict:
-                        symbol_trend["trend"] = "neutral"
-                        symbol_trend["reason"] = "BTC is neutral"
+                    symbol_trend = {"trend": "neutral", "reason": "no daily data"}
 
                 res["daily_trend"] = symbol_trend
                 log.info(f"{symbol} — tendance daily : {symbol_trend['trend']} (raison: {symbol_trend.get('reason', 'normal')})")
