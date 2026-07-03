@@ -118,7 +118,10 @@ async def main():
         ("prod_trailing", 3, 4.0, None, 1.0, True ),  # PRODUCTION REELLE : sl_atr_mult=1.0 + trailing activé
     ]
 
-    watchlist = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "VET/USDT", "BNB/USDT", "HYPE/USDT:USDT"]
+    watchlist = [
+        "BTC/USDT", "ETH/USDT", "HYPE/USDT", "XRP/USDT",
+        "LINK/USDT", "BNB/USDT", "SOL/USDT", "VET/USDT",
+    ]
 
     results = []
 

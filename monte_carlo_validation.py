@@ -28,7 +28,7 @@ N_ITERATIONS = 50_000
 N_WORKERS = os.cpu_count() or 4
 
 WATCHLIST = [
-    "BTC/USDT", "ETH/USDT", "HYPE/USDT", "SUI/USDT",
+    "BTC/USDT", "ETH/USDT", "HYPE/USDT", "XRP/USDT",
     "LINK/USDT", "BNB/USDT", "SOL/USDT", "VET/USDT"
 ]
 
