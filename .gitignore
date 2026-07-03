@@ -33,6 +33,10 @@ cache/
 .pydevproject
 .settings/
 
+# Cline / Agents (fichiers locaux hors du dépôt)
+.agents/
+.clinerules
+
 # OS
 .DS_Store
 Thumbs.db

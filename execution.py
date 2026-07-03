@@ -186,6 +186,9 @@ async def execute_signal(signal: dict, quantity: float) -> dict:
             "tp1_order":   tp1_order,
             "tp2_order":   tp2_order,
             "success":     True,
+            "sl_order_id":  str(sl_order["id"]),
+            "tp1_order_id": str(tp1_order["id"]) if tp1_order else None,
+            "tp2_order_id": str(tp2_order["id"]) if tp2_order else None,
         }
 
     except ccxt_async.InsufficientFunds as e:

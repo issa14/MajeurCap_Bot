@@ -356,17 +356,20 @@ def _normalize_symbol(symbol: str) -> str:
     return symbol.split(":")[0]
 
 
+def _to_futures_symbol(symbol: str) -> str:
+    """Convertit un symbole DB (ex: 'BNB/USDT') en format Binance Futures (ex: 'BNB/USDT:USDT').
+    Utilisé pour fetch_open_orders, create_order, cancel_order — toutes les opérations 
+    qui nécessitent le format futures canonique. """
+    if symbol.endswith('/USDT') and ':USDT' not in symbol:
+        return f"{symbol}:USDT"
+    return symbol
+
+
 async def reconcile_positions_on_startup() -> None:
     """
-    Compare les positions actives en DB avec les positions réelles sur Binance.
+    Délégue à sync_all() la réconciliation unifiée DB ↔ Binance.
+    Conservé pour backward compatibility avec bot_telegram.py.
     Appelée UNE SEULE FOIS au démarrage du bot.
-
-    Cas traités :
-    - Position active en DB mais absente sur Binance → marquer closed (SL/TP déclenché hors surveillance)
-    - Position sur Binance mais absente en DB → alerter Telegram (sans insertion en DB)
-
-    Note : les symboles sont normalisés via _normalize_symbol() pour éviter les faux positifs
-    entre le format DB ('SUI/USDT') et le format CCXT futures ('SUI/USDT:USDT').
     """
     config = get_config()
     auto_exec = config.get("execution", {}).get("auto_execute", False)
@@ -375,98 +378,8 @@ async def reconcile_positions_on_startup() -> None:
         return
 
     log.info("=== Réconciliation démarrage : DB vs Binance ===")
-
-    # 1. Positions actives en DB (clé = symbol normalisé)
-    db_positions = {p["symbol"]: p for p in db.get_active_positions()}
-    db_symbols_normalized = {_normalize_symbol(s): s for s in db_positions}
-
-    # 2. Positions réelles sur Binance (clé = symbol normalisé)
-    exchange = await init_trading_exchange()
-    try:
-        raw_positions = await exchange.fetch_positions()
-        binance_by_normalized = {}
-        for p in raw_positions:
-            if p.get("contracts") and float(p["contracts"]) != 0:
-                norm = _normalize_symbol(p["symbol"])
-                binance_by_normalized[norm] = p
-    except Exception as e:
-        log.error(f"reconcile_on_startup : impossible de récupérer les positions Binance ({e})")
-        await exchange.close()
-        return
-
-    try:
-        # 3. Cas A — Position active en DB mais absente sur Binance
-        for norm_sym, db_sym in db_symbols_normalized.items():
-            if norm_sym not in binance_by_normalized:
-                pos = db_positions[db_sym]
-                log.warning(
-                    f"RECONCILE {db_sym} — active en DB (id={pos['id']}) mais ABSENTE sur Binance. "
-                    f"Interrogation de l'historique des ordres pour identifier la sortie..."
-                )
-                raw_symbol = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
-                exit_info = await _detect_exit_from_binance(exchange, raw_symbol, pos, config)
-
-                if exit_info:
-                    log.warning(
-                        f"RECONCILE {db_sym} — fermeture détectée via historique ordres: "
-                        f"{exit_info['exit_reason']} à {exit_info['exit_price']}"
-                    )
-                    db.update_position(pos["id"], {
-                        "status": "closed",
-                        "exit_reason": exit_info["exit_reason"],
-                        "exit_price": exit_info["exit_price"],
-                        "exit_date": datetime.now(timezone.utc).isoformat(),
-                        "pnl_usd": exit_info["pnl_usd"],
-                        "pnl_pct": exit_info["pnl_pct"],
-                    })
-                    emoji = "✅" if exit_info["pnl_pct"] > 0 else "❌"
-                    await send_telegram(
-                        f"{emoji} RECONCILE {db_sym} — Fermée ({exit_info['exit_reason']})\n"
-                        f"Prix sortie : {exit_info['exit_price']}\n"
-                        f"PnL : {exit_info['pnl_pct']:+.2f}%",
-                        config,
-                    )
-                else:
-                    log.warning(
-                        f"RECONCILE {db_sym} — active in DB but missing on Binance, "
-                        f"aucun historique ordre disponible. Marking closed."
-                    )
-                    db.update_position(pos["id"], {
-                        "status": "closed",
-                        "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
-                        "exit_date": datetime.now(timezone.utc).isoformat(),
-                    })
-                    await send_telegram(
-                        f"⚠️ RECONCILE {db_sym} — Position active en DB mais introuvable sur Binance.\n"
-                        f"Marquée closed automatiquement (aucun historique ordre disponible).\n"
-                        f"Entry: {pos.get('entry_price')} | Direction: {pos.get('direction')}",
-                        config
-                    )
-    finally:
-        await exchange.close()
-
-    # 4. Cas B — Position sur Binance mais absente en DB → alerte SANS insertion
-    # (pas d'insertion automatique pour éviter les doublons et les réouvertures en cascade)
-    for norm_sym, bpos in binance_by_normalized.items():
-        if norm_sym not in db_symbols_normalized:
-            side = bpos.get("side", "")
-            direction = "LONG" if side == "long" else "SHORT"
-            entry_price = bpos.get("entryPrice") or bpos.get("info", {}).get("entryPrice", 0)
-            contracts = float(bpos.get("contracts", 0))
-            raw_symbol = bpos.get("symbol", norm_sym)
-            log.warning(
-                f"RECONCILE {norm_sym} — position ORPHELINE sur Binance "
-                f"({direction} qty={contracts} entry={entry_price}) absente de la DB. "
-                f"Alerte envoyée — fermeture manuelle requise."
-            )
-            await send_telegram(
-                f"🚨 RECONCILE {norm_sym} — Position ORPHELINE détectée sur Binance !\n"
-                f"Direction: {direction} | Qty: {contracts} | Entry: {entry_price}\n"
-                f"⚠️ Non insérée en DB — fermer manuellement sur Binance.",
-                config
-            )
-
-    log.info("=== Réconciliation terminée ===")
+    await sync_all(config)
+    log.info("=== Réconciliation démarrage terminée ===")
 
 async def _detect_exit_from_binance(
     exchange: ccxt_async.binance,
@@ -478,10 +391,14 @@ async def _detect_exit_from_binance(
     Interroge l'historique des ordres Binance pour déterminer la vraie raison
     de sortie (SL/TP1/TP2) quand une position active en DB est absente sur l'exchange.
 
-    Retourne un dict {exit_reason, exit_price, pnl_usd, pnl_pct} ou None si impossible.
+    Agrège TOUS les ordres reduceOnly filled depuis l'entrée (pas seulement le dernier),
+    pour capturer les sorties à fills multiples et les sorties partielles TP1+TP2.
+
+    Retourne un dict {exit_reason, exit_price, pnl_usd, pnl_pct, filled_qty, fills}
+    ou None si impossible.
     """
     try:
-        orders = await exchange.fetch_orders(symbol, limit=15)
+        orders = await exchange.fetch_orders(symbol, limit=50)
         filled = [
             o for o in orders
             if o.get("status") in ("closed", "filled")
@@ -499,87 +416,114 @@ async def _detect_exit_from_binance(
         log.warning(f"{symbol} — aucun ordre filled reduceOnly trouvé dans l'historique")
         return None
 
-    # Binance allOrders retourne par date croissante (ancien → récent).
-    # Avec limit=15, le dernier élément est l'ordre le plus récent.
-    last = filled[-1]
-    stop_price = last.get("stopPrice")
-    if stop_price is None:
-        stop_price = last.get("info", {}).get("stopPrice")
-    if stop_price is not None:
-        stop_price = float(stop_price)
-
-    exit_price = last.get("average") or last.get("price") or last.get("cost")
-    if exit_price is not None:
-        try:
-            exit_price = float(exit_price)
-        except (ValueError, TypeError):
-            exit_price = stop_price
-    if exit_price is None or exit_price == 0:
-        exit_price = stop_price
-
-    filled_qty = float(last.get("filled", 0))
     direction = pos["direction"]
     entry = pos.get("entry") or pos.get("entry_price") or 0
     sl = pos.get("sl") or pos.get("sl_price") or 0
     tp1 = pos.get("tp1") or pos.get("tp1_price") or 0
     tp2 = pos.get("tp2") or pos.get("tp2_price") or 0
+    full_qty = pos.get("quantity") or 0
 
-    # Identifier la raison de sortie par comparaison du stopPrice
+    # Agréger tous les fills : prix moyen pondéré par quantité + qty totale
+    total_qty = 0.0
+    weighted_price_sum = 0.0
+    fills_detail = []
+    last_stop_price = None
+
+    for o in filled:
+        f_qty = float(o.get("filled", 0))
+        f_price = o.get("average") or o.get("price") or 0
+        if f_price is None:
+            f_price = 0
+        f_price = float(f_price)
+
+        total_qty += f_qty
+        weighted_price_sum += f_price * f_qty
+
+        sp = o.get("stopPrice")
+        if sp is None:
+            sp = o.get("info", {}).get("stopPrice")
+        if sp is not None:
+            sp = float(sp)
+
+        fills_detail.append({
+            "id": str(o.get("id", "")),
+            "qty": f_qty,
+            "price": f_price,
+            "stop_price": sp,
+            "type": o.get("type", ""),
+        })
+
+        if sp is not None:
+            last_stop_price = sp
+
+    if total_qty <= 0:
+        return None
+
+    avg_exit_price = weighted_price_sum / total_qty
+
+    # Identifier la raison de sortie par comparaison du stopPrice du dernier fill reduceOnly
     exit_reason = "BINANCE_FILL"
-    if stop_price and stop_price > 0:
-        tol = 0.003  # 0.3 % de tolérance pour les arrondis Binance
-        if sl > 0 and abs(stop_price - sl) / sl < tol:
+    if last_stop_price and last_stop_price > 0:
+        tol = 0.003  # 0.3% de tolérance pour les arrondis Binance
+        if sl > 0 and abs(last_stop_price - sl) / sl < tol:
             exit_reason = "SL"
-        elif tp2 > 0 and abs(stop_price - tp2) / tp2 < tol:
+        elif tp2 > 0 and abs(last_stop_price - tp2) / tp2 < tol:
             exit_reason = "TP2"
-        elif tp1 > 0 and abs(stop_price - tp1) / tp1 < tol:
+        elif tp1 > 0 and abs(last_stop_price - tp1) / tp1 < tol:
             exit_reason = "TP1"
 
-    if exit_price is None or exit_price == 0:
-        exit_price = stop_price or entry
-
-    # PnL simple (100 % de la qty — pas de sortie partielle détectable ici)
-    full_qty = pos.get("quantity") or filled_qty
+    # PnL calculé avec le prix moyen pondéré sur la quantité totale sortie
     if direction == "LONG":
-        pnl_usd = (exit_price - entry) * full_qty
-        pnl_pct = (exit_price - entry) / entry * 100 if entry != 0 else 0
+        pnl_usd = (avg_exit_price - entry) * total_qty
+        pnl_pct = (avg_exit_price - entry) / entry * 100 if entry != 0 else 0
     else:
-        pnl_usd = (entry - exit_price) * full_qty
-        pnl_pct = (entry - exit_price) / entry * 100 if entry != 0 else 0
+        pnl_usd = (entry - avg_exit_price) * total_qty
+        pnl_pct = (entry - avg_exit_price) / entry * 100 if entry != 0 else 0
 
     log.info(
-        f"{symbol} — Sortie détectée via Binance: {exit_reason} "
-        f"prix={exit_price:.4f} stopPrice={stop_price} PnL={pnl_pct:+.2f}%"
+        f"{symbol} — Sortie détectée via Binance : {exit_reason} "
+        f"prix_moy={avg_exit_price:.4f} qty_sortie={total_qty:.6f}/{full_qty:.6f} "
+        f"fills={len(fills_detail)} PnL={pnl_pct:+.2f}%"
     )
 
     return {
         "exit_reason": exit_reason,
-        "exit_price": round(exit_price, 8),
+        "exit_price": round(avg_exit_price, 8),
         "pnl_usd": round(pnl_usd, 4),
         "pnl_pct": round(pnl_pct, 2),
+        "filled_qty": round(total_qty, 8),
+        "fills": fills_detail,
     }
 
 
 async def sync_all(config: dict, exchange=None) -> None:
     """
-    Réconciliation unifiée DB ↔ Binance (positions + ordres SL/TP).
+    Réconciliation unifiée DB ↔ Binance (positions + ordres SL/TP) — v2.
 
-    Appels API : 1x fetch_positions() + 1x fetch_open_orders(symbol) par
-    position active en DB (pour éviter le poids 40 du fetch_open_orders()
-    global sur Binance). Cette fonction :
-    1. Compare les quantités DB vs Binance → met à jour la DB
-    2. Détecte les positions disparues de Binance → marque closed
-    3. Détecte les positions orphelines sur Binance (pas en DB) → alerte
-    4. Vérifie chaque ordre SL/TP existant, recrée ceux qui manquent
-    5. Détecte les ordres SL/TP FILLED sur Binance → marque la position closed
+    Machine d'état explicite :
+      ACTIVE ──(disparue de Binance)──→ MISSING_ON_EXCHANGE
+                                           │
+                             (historique trouvé) → CLOSED (avec PnL)
+                                           │
+                             (historique vide)  → UNRESOLVED (⚠️ review manuelle)
+
+    Hiérarchie de résolution de conflit :
+      - Binance a la position, DB l'a aussi      → DB s'aligne sur Binance
+      - Binance a la position, DB ne l'a pas      → Alerte Telegram (pas d'insertion automatique)
+      - DB a la position, Binance ne l'a pas      → Machine d'état ci-dessus
+      - Les deux divergent (direction/entry)      → Alerte critique, pas de résolution auto
+
+    Appels API : 1x fetch_positions() + 1x fetch_open_orders(symbol) par position active.
+    Audit trail : chaque divergence est loguée dans reconcile_log.
     """
+    import json as _json
+
     auto_exec = config.get("execution", {}).get("auto_execute", False)
     if not auto_exec:
         return
 
     db_positions = {p["symbol"]: p for p in db.get_active_positions() if p.get("status") != "closed"}
-    if not db_positions:
-        return
+    db_norm_set = {_normalize_symbol(s) for s in db_positions}
 
     own_exchange = False
     if exchange is None:
@@ -589,7 +533,7 @@ async def sync_all(config: dict, exchange=None) -> None:
     try:
         await exchange.load_markets()
 
-        # ── 1. fetch_positions() : comparer les quantités ───────────────────
+        # ── 1. fetch_positions() ────────────────────────────────────────
         try:
             raw_positions = await exchange.fetch_positions()
         except Exception as e:
@@ -602,22 +546,20 @@ async def sync_all(config: dict, exchange=None) -> None:
                 norm = _normalize_symbol(p["symbol"])
                 binance_by_norm[norm] = p
 
-        # ── fetch_open_orders() : itère par symbole pour éviter le rate‑limit 40× ──
-        # IMPORTANT : l'API Binance Futures nécessite le format "BASE/USDT:USDT"
-        # (voir normalisation identique plus haut dans ce fichier, ex. ligne ~113).
+        # ── 2. fetch_open_orders() par symbole ──────────────────────────
         all_open_orders = []
         for db_sym in db_positions:
-            futures_sym = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
+            futures_sym = _to_futures_symbol(db_sym)
             try:
                 orders = await exchange.fetch_open_orders(futures_sym)
                 all_open_orders.extend(orders)
             except Exception as e:
                 log.warning(f"sync_all: fetch_open_orders échoué pour {db_sym} ({e})")
 
-        # Indexer les ordres par ID pour lookup rapide
-        open_by_id = {o["id"]: o for o in all_open_orders}
+        open_by_id = {str(o["id"]): o for o in all_open_orders}
+        TOLERANCE = 0.003  # 0.3% pour matching prix
 
-        # ── 2. Parcourir chaque position DB ─────────────────────────────────
+        # ── 3. Parcourir chaque position DB ─────────────────────────────
         for db_sym, pos in db_positions.items():
             norm_sym = _normalize_symbol(db_sym)
             pos_id = pos["id"]
@@ -627,15 +569,31 @@ async def sync_all(config: dict, exchange=None) -> None:
             tp2_price = pos.get("tp2_price") or pos.get("tp2") or 0
             db_qty    = pos.get("current_quantity") or pos.get("quantity") or 0
 
-            # ── Cas A : position DB absente de Binance → déterminer la vraie raison ──
+            # ══════════════════════════════════════════════════════════════
+            # Cas A — Position en DB mais absente de Binance
+            # Machine d'état : ACTIVE → MISSING_ON_EXCHANGE → CLOSED | UNRESOLVED
+            # ══════════════════════════════════════════════════════════════
             if norm_sym not in binance_by_norm:
                 raw_symbol = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
                 exit_info = await _detect_exit_from_binance(exchange, raw_symbol, pos, config)
 
+                reconcile_details = {
+                    "db_sym": db_sym,
+                    "pos_id": pos_id,
+                    "direction": direction,
+                    "db_qty": db_qty,
+                    "entry": pos.get("entry_price") or pos.get("entry"),
+                    "sl": sl_price,
+                    "tp1": tp1_price,
+                    "tp2": tp2_price,
+                    "detected": exit_info is not None,
+                    "fills_count": len(exit_info["fills"]) if exit_info and "fills" in exit_info else 0,
+                }
+
                 if exit_info:
                     log.warning(
-                        f"sync_all {db_sym} — fermeture détectée via historique ordres: "
-                        f"{exit_info['exit_reason']} à {exit_info['exit_price']}"
+                        f"sync_all {db_sym} — clôture détectée via historique : "
+                        f"{exit_info['exit_reason']} prix_moy={exit_info['exit_price']} PnL={exit_info['pnl_pct']:+.2f}%"
                     )
                     db.update_position(pos_id, {
                         "status": "closed",
@@ -645,6 +603,17 @@ async def sync_all(config: dict, exchange=None) -> None:
                         "pnl_usd": exit_info["pnl_usd"],
                         "pnl_pct": exit_info["pnl_pct"],
                     })
+                    db.bump_reconcile_version(pos_id)
+                    db.insert_reconcile_log(pos_id, "CLOSED_ON_EXCHANGE", {
+                        **reconcile_details,
+                        "exit_reason": exit_info["exit_reason"],
+                        "exit_price": exit_info["exit_price"],
+                        "pnl_usd": exit_info["pnl_usd"],
+                        "pnl_pct": exit_info["pnl_pct"],
+                        "filled_qty": exit_info.get("filled_qty"),
+                        "fills": exit_info.get("fills", []),
+                    })
+
                     emoji = "✅" if exit_info["pnl_pct"] > 0 else "❌"
                     asyncio.create_task(send_telegram(
                         f"{emoji} {db_sym} {direction} clôturé ({exit_info['exit_reason']})\n"
@@ -652,188 +621,462 @@ async def sync_all(config: dict, exchange=None) -> None:
                         config
                     ))
                 else:
-                    log.warning(f"sync_all {db_sym} — absente de Binance, aucun historique ordre disponible, marquée closed")
+                    # ⚠️ Pas de fermeture aveugle → statut UNRESOLVED + audit + alerte
+                    log.warning(
+                        f"sync_all {db_sym} — absente de Binance, aucun historique ordre → UNRESOLVED"
+                    )
                     db.update_position(pos_id, {
-                        "status": "closed",
-                        "exit_reason": "RECONCILE_MISSING_ON_EXCHANGE",
+                        "status": "unresolved",
+                        "exit_reason": "RECONCILE_UNRESOLVED",
                         "exit_date": datetime.now(timezone.utc).isoformat(),
                     })
+                    db.bump_reconcile_version(pos_id)
+                    db.insert_reconcile_log(pos_id, "POSITION_VANISHED", reconcile_details)
+
                     asyncio.create_task(send_telegram(
-                        f"⚠️ {db_sym} — Position fermée (disparue de Binance, aucun historique ordre disponible).",
+                        f"🟡 RECONCILE {db_sym} — Position active en DB mais DISPARUE de Binance.\n"
+                        f"Aucun historique d'ordre trouvé.\n"
+                        f"Passée en statut UNRESOLVED — review manuelle nécessaire !\n"
+                        f"Entry: {pos.get('entry_price')} | Direction: {direction} | Qty DB: {db_qty}",
                         config
                     ))
                 continue
 
             bpos = binance_by_norm[norm_sym]
 
-            # ── Cas B : comparaison quantité ────────────────────────────
+            # ══════════════════════════════════════════════════════════════
+            # Cas B — Les deux existent : aligner DB sur Binance
+            # ══════════════════════════════════════════════════════════════
             exchange_qty = float(bpos.get("contracts", 0))
+            exchange_entry = float(bpos.get("entryPrice") or 0)
+            exchange_side = bpos.get("side", "")
+
+            # B1 — divergence de direction ou entry → alerte critique
+            db_direction = direction.upper()
+            binance_direction = "LONG" if exchange_side == "long" else ("SHORT" if exchange_side == "short" else "")
+            db_entry = pos.get("entry_price") or pos.get("entry") or 0
+            entry_divergence = db_entry > 0 and exchange_entry > 0 and abs(exchange_entry - db_entry) / db_entry > 0.01
+            direction_divergence = binance_direction and db_direction != binance_direction
+
+            if direction_divergence or entry_divergence:
+                crit_details = {
+                    "db_direction": db_direction,
+                    "binance_direction": binance_direction,
+                    "direction_match": not direction_divergence,
+                    "db_entry": db_entry,
+                    "binance_entry": exchange_entry,
+                    "entry_match": not entry_divergence,
+                }
+                log.critical(f"sync_all {db_sym} — DIVERGENCE CRITIQUE DB↔Binance : {_json.dumps(crit_details)}")
+                db.bump_reconcile_version(pos_id)
+                db.insert_reconcile_log(pos_id, "CRITICAL_DIVERGENCE", {
+                    "crit_details": crit_details,
+                    "db_pos": {k: str(v) for k, v in pos.items() if k != "raw"},
+                    "binance_pos_raw": {
+                        "symbol": bpos.get("symbol"),
+                        "side": exchange_side,
+                        "contracts": exchange_qty,
+                        "entryPrice": exchange_entry,
+                        "unrealizedPnl": bpos.get("unrealizedPnl"),
+                    },
+                })
+                asyncio.create_task(send_telegram(
+                    f"🚨 CRITICAL {db_sym} — DIVERGENCE DB↔Binance détectée !\n"
+                    f"DB: {db_direction} entry={db_entry} qty={db_qty}\n"
+                    f"Binance: {binance_direction} entry={exchange_entry} qty={exchange_qty}\n"
+                    f"⚠️ Résolution manuelle requise — le bot NE FERME PAS cette position.\n"
+                    f"Corriger la DB ou fermer manuellement sur Binance.",
+                    config
+                ))
+                continue
+
+            # B2 — correction quantité
             if db_qty > 0 and abs(exchange_qty - db_qty) > (0.01 * db_qty):
                 db.update_position(pos_id, {"current_quantity": exchange_qty})
-                log.info(f"sync_all {db_sym} — quantité corrigée: {db_qty} → {exchange_qty}")
+                db.bump_reconcile_version(pos_id)
+                db.insert_reconcile_log(pos_id, "QTY_MISMATCH", {
+                    "db_qty": db_qty,
+                    "exchange_qty": exchange_qty,
+                    "delta_pct": round(abs(exchange_qty - db_qty) / db_qty * 100, 2),
+                })
+                log.info(f"sync_all {db_sym} — qty corrigée: {db_qty} → {exchange_qty}")
 
-                # Si la quantité est tombée à ~0, la position est fermée
                 if exchange_qty < (db_qty * 0.05):
                     db.update_position(pos_id, {
                         "status": "closed",
                         "exit_reason": "RECONCILE_FULLY_CLOSED",
                         "exit_date": datetime.now(timezone.utc).isoformat(),
                     })
+                    db.bump_reconcile_version(pos_id)
+                    db.insert_reconcile_log(pos_id, "FULLY_CLOSED_QTY_ZERO", {
+                        "db_qty": db_qty,
+                        "exchange_qty": exchange_qty,
+                    })
                     asyncio.create_task(send_telegram(
-                        f"⚠️ {db_sym} — Position fermée (quantité résiduelle proche de zéro sur Binance).",
+                        f"⚠️ {db_sym} — Position fermée (qty résiduelle ~0 sur Binance).",
                         config
                     ))
                     continue
 
-            # ── Cas C : vérifier / réparer les ordres SL, TP1, TP2 ─────
+            # ══════════════════════════════════════════════════════════════
+            # Cas C — Vérifier / réparer les ordres SL, TP1, TP2
+            # Stratégie deux-tiers : (1) lookup par order_id en DB → fetch_order
+            # (2) fallback matching par stopPrice/type/qty sur open_orders
+            # ══════════════════════════════════════════════════════════════
+
+            def _match_order_by_price(
+                open_orders: list,
+                target_price: float,
+                order_type: str,
+                expected_qty_hint: float = None,
+                tolerance: float = TOLERANCE,
+            ) -> Optional[dict]:
+                """Matche un ordre ouvert par stopPrice + type (± tolérance)."""
+                for o in open_orders:
+                    o_type = o.get("type", "")
+                    o_sp = o.get("stopPrice")
+                    if not o_sp or o_type != order_type:
+                        continue
+                    o_sp = float(o_sp)
+                    if abs(o_sp - target_price) / max(target_price, 1) < tolerance:
+                        if expected_qty_hint is not None:
+                            o_qty = float(o.get("amount", 0))
+                            if abs(o_qty - expected_qty_hint) / max(expected_qty_hint, 1) > 0.15:
+                                continue
+                        return o
+                return None
+
+            open_orders_for_sym = [
+                o for o in all_open_orders
+                if _normalize_symbol(o.get("symbol", "")) == norm_sym
+                and (o.get("reduceOnly") is True or o.get("info", {}).get("reduceOnly") == "true")
+            ]
+
+            sl_found = False
+            tp1_found = False
+            tp2_found = False
+            sl_order_id_to_save = None
+            tp1_order_id_to_save = None
+            tp2_order_id_to_save = None
+
+            # ── Tier 1 : lookup par order_id stocké en DB ──
+            async def _fetch_order_if_exists(order_id, futures_sym):
+                """fetch_order() avec gestion 404. Retourne l'ordre ou None."""
+                if not order_id:
+                    return None
+                try:
+                    return await exchange.fetch_order(str(order_id), futures_sym)
+                except Exception:
+                    return None
+
+            # SL
+            sl_db_id = pos.get("sl_order_id")
+            if sl_db_id and sl_price > 0:
+                sl_order = await _fetch_order_if_exists(sl_db_id, _to_futures_symbol(db_sym))
+                if sl_order:
+                    sl_status = sl_order.get("status", "")
+                    o_sp = float(sl_order.get("stopPrice", 0))
+                    if sl_status in ("open", "new") and abs(o_sp - sl_price) / max(sl_price, 1) < TOLERANCE:
+                        sl_found = True
+                        sl_order_id_to_save = str(sl_order["id"])
+                        log.info(f"sync_all {db_sym} — SL trouvé par ID: {sl_order_id_to_save} (status={sl_status})")
+                    else:
+                        log.info(f"sync_all {db_sym} — SL {sl_db_id} status={sl_status} stopPrice={o_sp} — sera recréé")
+                else:
+                    log.info(f"sync_all {db_sym} — SL {sl_db_id} introuvable (404/annulé)")
+
+            # TP1
+            tp1_db_id = pos.get("tp1_order_id")
+            tp1_hit = pos.get("tp1_status") == "FILLED"
+            if tp1_db_id and tp1_price > 0 and not tp1_hit:
+                tp1_order = await _fetch_order_if_exists(tp1_db_id, _to_futures_symbol(db_sym))
+                if tp1_order:
+                    tp1_status = tp1_order.get("status", "")
+                    o_sp = float(tp1_order.get("stopPrice", 0))
+                    if tp1_status in ("open", "new") and abs(o_sp - tp1_price) / max(tp1_price, 1) < TOLERANCE:
+                        tp1_found = True
+                        tp1_order_id_to_save = str(tp1_order["id"])
+                        log.info(f"sync_all {db_sym} — TP1 trouvé par ID: {tp1_order_id_to_save}")
+                    else:
+                        log.info(f"sync_all {db_sym} — TP1 {tp1_db_id} status={tp1_status} — sera recréé")
+                else:
+                    log.info(f"sync_all {db_sym} — TP1 {tp1_db_id} introuvable")
+
+            # TP2
+            tp2_db_id = pos.get("tp2_order_id")
+            if tp2_db_id and tp2_price > 0:
+                tp2_order = await _fetch_order_if_exists(tp2_db_id, _to_futures_symbol(db_sym))
+                if tp2_order:
+                    tp2_status = tp2_order.get("status", "")
+                    o_sp = float(tp2_order.get("stopPrice", 0))
+                    if tp2_status in ("open", "new") and abs(o_sp - tp2_price) / max(tp2_price, 1) < TOLERANCE:
+                        tp2_found = True
+                        tp2_order_id_to_save = str(tp2_order["id"])
+                        log.info(f"sync_all {db_sym} — TP2 trouvé par ID: {tp2_order_id_to_save}")
+                    else:
+                        log.info(f"sync_all {db_sym} — TP2 {tp2_db_id} status={tp2_status} — sera recréé")
+                else:
+                    log.info(f"sync_all {db_sym} — TP2 {tp2_db_id} introuvable")
+
+            # ── Tier 2 : fallback matching par prix sur open_orders ──
+            if not sl_found and sl_price > 0:
+                matched = _match_order_by_price(open_orders_for_sym, sl_price, "stop_market", exchange_qty)
+                if matched:
+                    sl_found = True
+                    sl_order_id_to_save = str(matched["id"])
+                    log.info(f"sync_all {db_sym} — SL trouvé par prix (fallback): {sl_order_id_to_save}")
+
+            if not tp1_found and tp1_price > 0 and not tp1_hit:
+                matched = _match_order_by_price(open_orders_for_sym, tp1_price, "take_profit_market", exchange_qty * 0.5)
+                if matched:
+                    tp1_found = True
+                    tp1_order_id_to_save = str(matched["id"])
+                    log.info(f"sync_all {db_sym} — TP1 trouvé par prix (fallback): {tp1_order_id_to_save}")
+
+            if not tp2_found and tp2_price > 0:
+                matched = _match_order_by_price(open_orders_for_sym, tp2_price, "take_profit_market")
+                if matched:
+                    tp2_found = True
+                    tp2_order_id_to_save = str(matched["id"])
+                    log.info(f"sync_all {db_sym} — TP2 trouvé par prix (fallback): {tp2_order_id_to_save}")
+
+            # ── Synchroniser les IDs DB avec ce qu'on a trouvé ──
+            for label, found, new_id, db_id in [
+                ("SL",  sl_found,  sl_order_id_to_save,  pos.get("sl_order_id")),
+                ("TP1", tp1_found, tp1_order_id_to_save, pos.get("tp1_order_id")),
+                ("TP2", tp2_found, tp2_order_id_to_save, pos.get("tp2_order_id")),
+            ]:
+                if found and new_id and str(new_id) != str(db_id or ""):
+                    db.update_position(pos_id, {f"{label.lower()}_order_id": new_id})
+                    db.bump_reconcile_version(pos_id)
+                    db.insert_reconcile_log(pos_id, "ORDER_ID_SYNCED", {
+                        "label": label,
+                        "old_id": str(db_id),
+                        "new_id": new_id,
+                    })
+                    log.info(f"sync_all {db_sym} — {label}_order_id sync: {db_id} → {new_id}")
+
+            # ── Recréer les ordres manquants ──
+            sl_side = "sell" if direction == "LONG" else "buy"
             order_specs = []
 
-            # Toujours vérifier le SL
-            order_specs.append({
-                "label": "SL",
-                "db_order_id": pos.get("sl_order_id"),
-                "price": sl_price,
-                "qty": exchange_qty,  # quantité réelle restante
-                "ord_type": "stop_market",
-            })
-
-            # TP1 seulement si pas encore hit
-            tp1_hit = pos.get("tp1_status") == "FILLED"
-            if not tp1_hit and pos.get("tp1_order_id"):
-                order_specs.append({
-                    "label": "TP1",
-                    "db_order_id": pos.get("tp1_order_id"),
-                    "price": tp1_price,
-                    "qty": exchange_qty * 0.5,
-                    "ord_type": "take_profit_market",
-                })
-
-            # TP2 toujours vérifié (il peut avoir été annulé après TP1)
-            if pos.get("tp2_order_id"):
-                # Si TP1 a été hit, la qty restante est déjà réduite
-                remaining_for_tp2 = exchange_qty  # après TP1, c'est la qty réelle
-                order_specs.append({
-                    "label": "TP2",
-                    "db_order_id": pos.get("tp2_order_id"),
-                    "price": tp2_price,
-                    "qty": remaining_for_tp2,
-                    "ord_type": "take_profit_market",
-                })
-
-            sl_side = "sell" if direction == "LONG" else "buy"
+            if not sl_found:
+                order_specs.append({"label": "SL",  "price": sl_price,  "qty": exchange_qty,         "ord_type": "stop_market"})
+            if not tp1_hit and pos.get("tp1_order_id") and not tp1_found:
+                order_specs.append({"label": "TP1", "price": tp1_price, "qty": exchange_qty * 0.5,   "ord_type": "take_profit_market"})
+            if pos.get("tp2_order_id") and not tp2_found:
+                order_specs.append({"label": "TP2", "price": tp2_price, "qty": exchange_qty,         "ord_type": "take_profit_market"})
 
             for spec in order_specs:
                 if spec["price"] <= 0 or spec["qty"] <= 0:
                     continue
 
-                order_id = spec["db_order_id"]
-                label = spec["label"]
-                ord_exists = False
-                ord_filled = False
+                # ── Circuit breaker par label ──
+                if spec["label"] == "SL":
+                    failures = pos.get("sl_sync_failures", 0)
+                    if failures >= 3:
+                        log.warning(f"sync_all {db_sym} — SL circuit breaker ({failures} échecs)")
+                        continue
+                else:
+                    # TP1/TP2 partagent le même compteur tp_sync_failures, seuil 5
+                    tp_failures = pos.get("tp_sync_failures", 0)
+                    if tp_failures >= 5:
+                        log.warning(f"sync_all {db_sym} — TP circuit breaker ({tp_failures} échecs)")
+                        continue
 
-                # Chercher l'ordre dans les open_orders par ID
-                if order_id and order_id in open_by_id:
-                    o = open_by_id[order_id]
-                    status = o.get("status", "")
-                    if status == "closed":
-                        # L'ordre est filled → la position doit être marquée closed
-                        ord_filled = True
-                        log.warning(f"sync_all {db_sym} — {label} {order_id} est FILLED sur Binance !")
-                    else:
-                        ord_exists = True
-                elif order_id:
-                    # L'ordre n'est pas dans open_orders → peut être filled ou annulé
-                    futures_sym = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
-                    try:
-                        o = await exchange.fetch_order(order_id, futures_sym)
-                        status = o.get("status", "")
-                        if status == "closed":
-                            ord_filled = True
-                            log.warning(f"sync_all {db_sym} — {label} {order_id} est FILLED (fetch_order) !")
-                        elif status in ("canceled", "expired"):
-                            log.warning(f"sync_all {db_sym} — {label} {order_id} status={status}, recréation")
+                futures_sym = _to_futures_symbol(db_sym)
+
+                # ══════════════════════════════════════════════════════════════
+                # GARDE D'IDEMPOTENCE — Check-then-Create
+                # Re-fetch les ordres ouverts AVANT de créer, pour éviter
+                # les doublons si le matching précédent a échoué.
+                # ══════════════════════════════════════════════════════════════
+                try:
+                    fresh_orders = await exchange.fetch_open_orders(futures_sym)
+                    already_exists = None
+                    for o in fresh_orders:
+                        o_type = o.get("type", "")
+                        o_sp = o.get("stopPrice")
+                        o_ro = o.get("reduceOnly", False) or o.get("info", {}).get("reduceOnly") == "true"
+                        if not o_sp or not o_ro:
+                            continue
+                        o_sp = float(o_sp)
+                        o_qty = float(o.get("amount", 0))
+                        # Matching par type + stopPrice (±0.5%) + qty (±15%)
+                        if o_type == spec["ord_type"] and abs(o_sp - spec["price"]) / max(spec["price"], 1) < 0.005:
+                            if abs(o_qty - spec["qty"]) / max(spec["qty"], 1) <= 0.15:
+                                already_exists = o
+                                break
+                    if already_exists:
+                        o_id = str(already_exists["id"])
+                        col = f"{spec['label'].lower()}_order_id"
+                        db.update_position(pos_id, {col: o_id})
+                        db.bump_reconcile_version(pos_id)
+                        db.insert_reconcile_log(pos_id, "ORDER_ALREADY_EXISTS", {
+                            "label": spec["label"],
+                            "existing_id": o_id,
+                            "stop_price": float(already_exists.get("stopPrice", 0)),
+                        })
+                        log.info(f"sync_all {db_sym} — {spec['label']} déjà présent (id={o_id}), création ignorée")
+                        if spec["label"] == "SL":
+                            db.reset_sync_failure(pos_id)
                         else:
-                            ord_exists = True
-                    except Exception:
-                        log.warning(f"sync_all {db_sym} — {label} {order_id} introuvable, recréation")
+                            db.reset_tp_sync_failure(pos_id)
+                        # Synchroniser aussi le flag dans la boucle locale
+                        if spec["label"] == "SL":
+                            sl_found = True
+                            sl_order_id_to_save = o_id
+                        elif spec["label"] == "TP1":
+                            tp1_found = True
+                            tp1_order_id_to_save = o_id
+                        elif spec["label"] == "TP2":
+                            tp2_found = True
+                            tp2_order_id_to_save = o_id
+                        continue  # ← PAS de création
+                except Exception as precheck_err:
+                    log.warning(f"sync_all {db_sym} — échec pre-check idempotence: {precheck_err}, on tente la création quand même")
 
-                # ── Si l'ordre est FILLED, marquer la position closed ────
-                if ord_filled:
-                    # Déterminer le prix de sortie
-                    exit_price = spec["price"]
-                    exit_reason = label  # "SL", "TP1", ou "TP2"
-
-                    # Annuler les autres ordres restants
-                    asyncio.create_task(cancel_exchange_orders(db_sym, pos, config))
-
-                    # Calculer le PnL
-                    entry = pos.get("entry_price") or pos.get("entry") or 0
-                    full_qty = pos.get("quantity") or 0
-                    if direction == "LONG":
-                        pnl_usd = (exit_price - entry) * full_qty
-                        pnl_pct = ((exit_price - entry) / entry * 100) if entry != 0 else 0
-                    else:
-                        pnl_usd = (entry - exit_price) * full_qty
-                        pnl_pct = ((entry - exit_price) / entry * 100) if entry != 0 else 0
-
-                    db.update_position(pos_id, {
-                        "status": "closed",
-                        "exit_reason": f"RECONCILE_{exit_reason}_FILLED",
-                        "exit_price": exit_price,
-                        "exit_date": datetime.now(timezone.utc).isoformat(),
-                        "pnl_usd": round(pnl_usd, 4),
-                        "pnl_pct": round(pnl_pct, 2),
+                # ── Création de l'ordre ──
+                try:
+                    qty_precise = float(exchange.amount_to_precision(db_sym, spec["qty"]))
+                    new_order = await exchange.create_order(
+                        symbol=futures_sym, type=spec["ord_type"], side=sl_side,
+                        amount=qty_precise, price=None,
+                        params={"stopPrice": spec["price"], "reduceOnly": True},
+                    )
+                    col = f"{spec['label'].lower()}_order_id"
+                    db.update_position(pos_id, {col: str(new_order["id"])})
+                    db.bump_reconcile_version(pos_id)
+                    db.insert_reconcile_log(pos_id, "ORDER_RECREATED", {
+                        "label": spec["label"],
+                        "new_id": str(new_order["id"]),
+                        "price": spec["price"],
+                        "qty": spec["qty"],
                     })
-                    log.info(f"sync_all {db_sym} — Position fermée ({label} FILLED détecté sur Binance)")
-
-                    emoji = "✅" if pnl_pct > 0 else "❌"
+                    log.info(f"sync_all {db_sym} — {spec['label']} recréé: {new_order['id']}")
+                    if spec["label"] == "SL":
+                        db.reset_sync_failure(pos_id)
+                    else:
+                        db.reset_tp_sync_failure(pos_id)
                     asyncio.create_task(send_telegram(
-                        f"{emoji} {db_sym} {direction} clôturé DÉTECTÉ SUR BINANCE ({label})\n"
-                        f"Prix sortie : {exit_price}\nPnL : {pnl_pct:+.2f}%",
-                        config
+                        f"🔧 {db_sym} — {spec['label']} recréé automatiquement sur Binance.", config
                     ))
-                    break  # Ne pas vérifier les autres ordres, la position est fermée
+                except Exception as e:
+                    err_str = str(e)
+                    log.error(f"sync_all {db_sym} — échec recréation {spec['label']}: {err_str}")
 
-                # ── Si l'ordre n'existe pas, le recréer ─────────────────
-                if not ord_exists:
-                    try:
-                        qty_precise = float(exchange.amount_to_precision(db_sym, spec["qty"]))
-                        new_order = await exchange.create_order(
-                            symbol=db_sym,
-                            type=spec["ord_type"],
-                            side=sl_side,
-                            amount=qty_precise,
-                            price=None,
-                            params={"stopPrice": spec["price"], "reduceOnly": True},
-                        )
-                        col = f"{label.lower()}_order_id"
-                        db.update_position(pos_id, {col: new_order["id"]})
-                        log.info(f"sync_all {db_sym} — {label} recréé: {new_order['id']}")
-                        asyncio.create_task(send_telegram(
-                            f"🔧 {db_sym} — {label} recréé automatiquement sur Binance.",
-                            config
-                        ))
-                    except Exception as e:
-                        log.error(f"sync_all {db_sym} — échec recréation {label}: {e}")
-                        if label == "SL":
+                    # -4045 cleanup + retry
+                    if "-4045" in err_str or "Reach max stop order limit" in err_str:
+                        log.warning(f"sync_all {db_sym} — -4045, cleanup orphelins...")
+                        cleaned = False
+                        try:
+                            orders_raw = await exchange.fetch_open_orders(futures_sym)
+                            for o in orders_raw:
+                                o_stop = float(o.get("stopPrice", 0))
+                                ro = o.get("reduceOnly", False) or o.get("info", {}).get("reduceOnly") == "true"
+                                if not ro:
+                                    continue
+                                matches = any(
+                                    s["price"] > 0 and abs(o_stop - s["price"]) / max(s["price"], 1) < TOLERANCE
+                                    for s in order_specs
+                                )
+                                if not matches:
+                                    try:
+                                        await exchange.cancel_order(str(o["id"]), futures_sym)
+                                        log.info(f"sync_all {db_sym} — orphelin annulé: {o['id']}")
+                                        cleaned = True
+                                    except Exception as ce:
+                                        log.warning(f"sync_all {db_sym} — échec annulation orphelin {o['id']}: {ce}")
+                        except Exception as fe:
+                            log.warning(f"sync_all {db_sym} — échec fetch pour cleanup: {fe}")
+
+                        if cleaned:
+                            try:
+                                qty_precise = float(exchange.amount_to_precision(db_sym, spec["qty"]))
+                                new_order = await exchange.create_order(
+                                    symbol=futures_sym, type=spec["ord_type"], side=sl_side,
+                                    amount=qty_precise, price=None,
+                                    params={"stopPrice": spec["price"], "reduceOnly": True},
+                                )
+                                col = f"{spec['label'].lower()}_order_id"
+                                db.update_position(pos_id, {col: str(new_order["id"])})
+                                db.bump_reconcile_version(pos_id)
+                                db.insert_reconcile_log(pos_id, "ORDER_RECREATED_AFTER_CLEANUP", {
+                                    "label": spec["label"], "new_id": str(new_order["id"]),
+                                })
+                                log.info(f"sync_all {db_sym} — {spec['label']} recréé après cleanup: {new_order['id']}")
+                                if spec["label"] == "SL":
+                                    db.reset_sync_failure(pos_id)
+                                else:
+                                    db.reset_tp_sync_failure(pos_id)
+                                asyncio.create_task(send_telegram(
+                                    f"🔧 {db_sym} — {spec['label']} recréé (après nettoyage).", config
+                                ))
+                                continue
+                            except Exception as re:
+                                log.error(f"sync_all {db_sym} — échec retry post-cleanup: {re}")
+
+                    # ── Circuit breaker ──
+                    if spec["label"] == "SL":
+                        new_failures = db.increment_sync_failure(pos_id)
+                        log.warning(f"sync_all {db_sym} — échec SL #{new_failures}/3")
+                        if new_failures >= 3:
+                            last_alert = pos.get("last_sl_alert_at")
+                            if not last_alert:
+                                db.set_last_sl_alert(pos_id)
+                                asyncio.create_task(send_telegram(
+                                    f"🚨 CRITICAL {db_sym} — SL non recréé depuis 3 cycles !\n"
+                                    f"Position SANS stop-loss.\n"
+                                    f"Qty: {exchange_qty} | Direction: {direction}\n"
+                                    f"⚠️ Intervention manuelle requise.", config
+                                ))
+                                db.insert_reconcile_log(pos_id, "SL_CIRCUIT_BREAKER", {
+                                    "failures": new_failures,
+                                    "last_price": sl_price,
+                                })
+                    else:
+                        new_failures = db.increment_tp_sync_failure(pos_id)
+                        log.warning(f"sync_all {db_sym} — échec TP #{new_failures}/5")
+                        if new_failures >= 5:
                             asyncio.create_task(send_telegram(
-                                f"🚨 URGENT {db_sym} — ÉCHEC recréation SL ! Position SANS stop-loss actif.",
+                                f"⚠️ {db_sym} — TP non recréé depuis 5 cycles.\n"
+                                f"La surveillance logicielle (check_position) prend le relais.\n"
+                                f"TP1: {tp1_price} | TP2: {tp2_price}",
                                 config
                             ))
+                            db.insert_reconcile_log(pos_id, "TP_CIRCUIT_BREAKER", {
+                                "failures": new_failures,
+                            })
 
-        # ── 3. Cas D : positions orphelines sur Binance (pas en DB) ─────────
-        db_norm_set = {_normalize_symbol(s) for s in db_positions}
+                    asyncio.create_task(send_telegram(
+                        f"⚠️ {db_sym} — Échec recréation {spec['label']}.\nErreur: {err_str}", config
+                    ))
+
+        # ══════════════════════════════════════════════════════════════════
+        # Cas D — Positions orphelines sur Binance (pas en DB)
+        # ══════════════════════════════════════════════════════════════════
         for norm_sym, bpos in binance_by_norm.items():
             if norm_sym not in db_norm_set:
                 side = bpos.get("side", "")
                 direction = "LONG" if side == "long" else "SHORT"
                 entry_price = bpos.get("entryPrice") or bpos.get("info", {}).get("entryPrice", 0)
                 contracts = float(bpos.get("contracts", 0))
+
+                orphan_details = {
+                    "symbol": norm_sym,
+                    "direction": direction,
+                    "qty": contracts,
+                    "entry_price": entry_price,
+                    "unrealizedPnl": bpos.get("unrealizedPnl"),
+                    "raw_symbol": bpos.get("symbol", norm_sym),
+                    "leverage": bpos.get("leverage"),
+                }
                 log.warning(f"sync_all {norm_sym} — position ORPHELINE sur Binance ({direction} qty={contracts})")
+                db.insert_reconcile_log(None, "ORPHAN_POSITION_BINANCE", orphan_details)
                 asyncio.create_task(send_telegram(
                     f"🚨 {norm_sym} — Position ORPHELINE sur Binance !\n"
                     f"Direction: {direction} | Qty: {contracts} | Entry: {entry_price}\n"
-                    f"⚠️ Non insérée en DB — fermer manuellement.",
+                    f"⚠️ Non insérée en DB — fermer manuellement sur Binance.",
                     config
                 ))
 
@@ -959,9 +1202,9 @@ async def open_position(signal: dict, config: dict) -> dict:
             else:
                 return {"success": False, "reason": "Échec exécution API"}
         else:
-            sl_order_id  = result.get("sl_order",  {}).get("id")
-            tp1_order_id = result.get("tp1_order", {}).get("id") if result.get("tp1_order") else None
-            tp2_order_id = result.get("tp2_order", {}).get("id") if result.get("tp2_order") else None
+            sl_order_id  = result.get("sl_order_id") or (result.get("sl_order", {}).get("id") if result.get("sl_order") else None)
+            tp1_order_id = result.get("tp1_order_id") or (result.get("tp1_order", {}).get("id") if result.get("tp1_order") else None)
+            tp2_order_id = result.get("tp2_order_id") or (result.get("tp2_order", {}).get("id") if result.get("tp2_order") else None)
 
     new_pos = {
         "symbol": symbol,

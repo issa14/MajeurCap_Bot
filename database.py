@@ -50,21 +50,26 @@ class DatabaseManager:
             cursor.execute("PRAGMA table_info(positions)")
             columns = [info[1] for info in cursor.fetchall()]
             migrations = [
-                ("pnl_usd",          "ALTER TABLE positions ADD COLUMN pnl_usd REAL"),
-                ("tp1_order_id",     "ALTER TABLE positions ADD COLUMN tp1_order_id TEXT"),
-                ("tp2_order_id",     "ALTER TABLE positions ADD COLUMN tp2_order_id TEXT"),
-                ("current_quantity", "ALTER TABLE positions ADD COLUMN current_quantity REAL"),
-                ("tp1_status",       "ALTER TABLE positions ADD COLUMN tp1_status TEXT DEFAULT 'PENDING'"),
-                ("tp2_status",       "ALTER TABLE positions ADD COLUMN tp2_status TEXT DEFAULT 'PENDING'"),
+                ("pnl_usd",             "ALTER TABLE positions ADD COLUMN pnl_usd REAL"),
+                ("tp1_order_id",        "ALTER TABLE positions ADD COLUMN tp1_order_id TEXT"),
+                ("tp2_order_id",        "ALTER TABLE positions ADD COLUMN tp2_order_id TEXT"),
+                ("current_quantity",    "ALTER TABLE positions ADD COLUMN current_quantity REAL"),
+                ("tp1_status",          "ALTER TABLE positions ADD COLUMN tp1_status TEXT DEFAULT 'PENDING'"),
+                ("tp2_status",          "ALTER TABLE positions ADD COLUMN tp2_status TEXT DEFAULT 'PENDING'"),
+                ("sl_sync_failures",    "ALTER TABLE positions ADD COLUMN sl_sync_failures INTEGER DEFAULT 0"),
+                ("last_sl_alert_at",    "ALTER TABLE positions ADD COLUMN last_sl_alert_at TEXT"),
+                ("reconcile_version",   "ALTER TABLE positions ADD COLUMN reconcile_version INTEGER DEFAULT 0"),
+                ("tp_sync_failures",    "ALTER TABLE positions ADD COLUMN tp_sync_failures INTEGER DEFAULT 0"),
             ]
             for col_name, alter_sql in migrations:
                 if col_name not in columns:
                     cursor.execute(alter_sql)
 
             # Index unique pour éviter les doublons sur les positions actives
+            # (exclut 'closed' et 'unresolved' — les deux sont des états terminaux)
             cursor.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_symbol 
-                ON positions (symbol) WHERE status != 'closed'
+                ON positions (symbol) WHERE status NOT IN ('closed', 'unresolved')
             """)
 
             # Table pour le cooldown des signaux (anti-spam Telegram)
@@ -88,6 +93,19 @@ class DatabaseManager:
                     confluences TEXT,
                     traded BOOLEAN DEFAULT 0,
                     reject_reason TEXT
+                );
+            """)
+            # Table d'audit de réconciliation — piste de chaque divergence DB↔Binance
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reconcile_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    position_id INTEGER,
+                    event_type TEXT NOT NULL,
+                    details_json TEXT,
+                    resolved BOOLEAN DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    FOREIGN KEY (position_id) REFERENCES positions(id)
                 );
             """)
             conn.commit()
@@ -221,11 +239,11 @@ class DatabaseManager:
             conn.commit()
 
     def get_active_positions(self) -> list:
-        """Retourne la liste des positions non clôturées."""
+        """Retourne la liste des positions non clôturées et non unresolved."""
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM positions WHERE status != 'closed'")
+            cursor.execute("SELECT * FROM positions WHERE status NOT IN ('closed', 'unresolved')")
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -280,6 +298,118 @@ class DatabaseManager:
                 LIMIT ?
             """, (limit,))
             return [dict(row) for row in cursor.fetchall()]
+
+    def increment_sync_failure(self, pos_id: int) -> int:
+        """Incrémente le compteur d'échecs de sync SL pour une position. Retourne la nouvelle valeur."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET sl_sync_failures = sl_sync_failures + 1 WHERE id = ?",
+                (pos_id,)
+            )
+            conn.commit()
+            cursor.execute("SELECT sl_sync_failures FROM positions WHERE id = ?", (pos_id,))
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    def reset_sync_failure(self, pos_id: int) -> None:
+        """Réinitialise le compteur d'échecs de sync SL après une recréation réussie."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET sl_sync_failures = 0, last_sl_alert_at = NULL WHERE id = ?",
+                (pos_id,)
+            )
+            conn.commit()
+
+    def increment_tp_sync_failure(self, pos_id: int) -> int:
+        """Incrémente le compteur d'échecs de sync TP (partagé TP1+TP2). Retourne la nouvelle valeur."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET tp_sync_failures = tp_sync_failures + 1 WHERE id = ?",
+                (pos_id,)
+            )
+            conn.commit()
+            cursor.execute("SELECT tp_sync_failures FROM positions WHERE id = ?", (pos_id,))
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    def reset_tp_sync_failure(self, pos_id: int) -> None:
+        """Réinitialise le compteur d'échecs de sync TP."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET tp_sync_failures = 0 WHERE id = ?",
+                (pos_id,)
+            )
+            conn.commit()
+
+    def set_last_sl_alert(self, pos_id: int) -> None:
+        """Marque l'heure de la dernière alerte SL critique pour éviter le spam Telegram."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET last_sl_alert_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), pos_id)
+            )
+            conn.commit()
+
+    def insert_reconcile_log(self, position_id: int, event_type: str,
+                              details: dict = None, resolved: bool = False) -> int:
+        """Enregistre une divergence DB↔Binance pour audit trail.
+        
+        Retourne l'ID de l'entrée dans reconcile_log.
+        """
+        import json
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO reconcile_log
+                    (position_id, event_type, details_json, resolved, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                position_id,
+                event_type,
+                json.dumps(details) if details else None,
+                int(resolved),
+                datetime.now(timezone.utc).isoformat(),
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_unresolved_reconcile_events(self) -> list:
+        """Retourne les événements de réconciliation non résolus (pour dashboard/review)."""
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM reconcile_log WHERE resolved = 0 ORDER BY created_at DESC"
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def resolve_reconcile_event(self, event_id: int) -> None:
+        """Marque un événement de réconciliation comme résolu (review manuelle)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE reconcile_log SET resolved = 1, resolved_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), event_id),
+            )
+            conn.commit()
+
+    def bump_reconcile_version(self, pos_id: int) -> int:
+        """Incrémente le reconcile_version d'une position. Retourne la nouvelle valeur."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET reconcile_version = reconcile_version + 1 WHERE id = ?",
+                (pos_id,),
+            )
+            conn.commit()
+            cursor.execute("SELECT reconcile_version FROM positions WHERE id = ?", (pos_id,))
+            row = cursor.fetchone()
+            return row[0] if row else 0
 
     def cleanup_old_records(self, days: int = 30) -> None:
         """Supprime les vieux enregistrements pour éviter la croissance illimitée de la DB.

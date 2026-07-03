@@ -23,4 +23,4 @@ async def send_telegram(text: str, config: dict, disable_notification: bool = Fa
                 if resp.status != 200:
                     log.error(f"Erreur Telegram : {await resp.text()}")
     except Exception as e:
-        log.error(f"Échec envoi Telegram : {e}")
+        log.error(f"Échec envoi Telegram : {repr(e)}")
