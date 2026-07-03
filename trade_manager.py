@@ -365,6 +365,30 @@ def _to_futures_symbol(symbol: str) -> str:
     return symbol
 
 
+def _get_stop_price(order: dict) -> float:
+    """Extrait le prix de déclenchement d'un ordre ccxt, quelle que soit la version/clé.
+    ccxt >= 4.x expose 'triggerPrice' au niveau racine (PAS 'stopPrice' — cette clé
+    n'existe que dans order['info']['stopPrice'], le payload brut Binance).
+    On vérifie les 3 emplacements possibles par robustesse, sans dépendre d'une seule clé.
+    """
+    for key in ("triggerPrice", "stopPrice"):
+        val = order.get(key)
+        if val is not None:
+            try:
+                f = float(val)
+                if f > 0:
+                    return f
+            except (TypeError, ValueError):
+                pass
+    info_val = order.get("info", {}).get("stopPrice")
+    if info_val is not None:
+        try:
+            return float(info_val)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
 async def reconcile_positions_on_startup() -> None:
     """
     Délégue à sync_all() la réconciliation unifiée DB ↔ Binance.
@@ -734,10 +758,9 @@ async def sync_all(config: dict, exchange=None) -> None:
                 """Matche un ordre ouvert par stopPrice + type (± tolérance)."""
                 for o in open_orders:
                     o_type = o.get("type", "")
-                    o_sp = o.get("stopPrice")
+                    o_sp = _get_stop_price(o)
                     if not o_sp or o_type != order_type:
                         continue
-                    o_sp = float(o_sp)
                     if abs(o_sp - target_price) / max(target_price, 1) < tolerance:
                         if expected_qty_hint is not None:
                             o_qty = float(o.get("amount", 0))
@@ -775,7 +798,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                 sl_order = await _fetch_order_if_exists(sl_db_id, _to_futures_symbol(db_sym))
                 if sl_order:
                     sl_status = sl_order.get("status", "")
-                    o_sp = float(sl_order.get("stopPrice", 0))
+                    o_sp = _get_stop_price(sl_order)
                     if sl_status in ("open", "new") and abs(o_sp - sl_price) / max(sl_price, 1) < TOLERANCE:
                         sl_found = True
                         sl_order_id_to_save = str(sl_order["id"])
@@ -792,7 +815,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                 tp1_order = await _fetch_order_if_exists(tp1_db_id, _to_futures_symbol(db_sym))
                 if tp1_order:
                     tp1_status = tp1_order.get("status", "")
-                    o_sp = float(tp1_order.get("stopPrice", 0))
+                    o_sp = _get_stop_price(tp1_order)
                     if tp1_status in ("open", "new") and abs(o_sp - tp1_price) / max(tp1_price, 1) < TOLERANCE:
                         tp1_found = True
                         tp1_order_id_to_save = str(tp1_order["id"])
@@ -808,7 +831,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                 tp2_order = await _fetch_order_if_exists(tp2_db_id, _to_futures_symbol(db_sym))
                 if tp2_order:
                     tp2_status = tp2_order.get("status", "")
-                    o_sp = float(tp2_order.get("stopPrice", 0))
+                    o_sp = _get_stop_price(tp2_order)
                     if tp2_status in ("open", "new") and abs(o_sp - tp2_price) / max(tp2_price, 1) < TOLERANCE:
                         tp2_found = True
                         tp2_order_id_to_save = str(tp2_order["id"])
@@ -896,11 +919,10 @@ async def sync_all(config: dict, exchange=None) -> None:
                     already_exists = None
                     for o in fresh_orders:
                         o_type = o.get("type", "")
-                        o_sp = o.get("stopPrice")
+                        o_sp = _get_stop_price(o)
                         o_ro = o.get("reduceOnly", False) or o.get("info", {}).get("reduceOnly") == "true"
                         if not o_sp or not o_ro:
                             continue
-                        o_sp = float(o_sp)
                         o_qty = float(o.get("amount", 0))
                         # Matching par type + stopPrice (±0.5%) + qty (±15%)
                         if o_type == spec["ord_type"] and abs(o_sp - spec["price"]) / max(spec["price"], 1) < 0.005:
@@ -915,7 +937,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                         db.insert_reconcile_log(pos_id, "ORDER_ALREADY_EXISTS", {
                             "label": spec["label"],
                             "existing_id": o_id,
-                            "stop_price": float(already_exists.get("stopPrice", 0)),
+                            "stop_price": _get_stop_price(already_exists),
                         })
                         log.info(f"sync_all {db_sym} — {spec['label']} déjà présent (id={o_id}), création ignorée")
                         if spec["label"] == "SL":
@@ -972,7 +994,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                         try:
                             orders_raw = await exchange.fetch_open_orders(futures_sym)
                             for o in orders_raw:
-                                o_stop = float(o.get("stopPrice", 0))
+                                o_stop = _get_stop_price(o)
                                 ro = o.get("reduceOnly", False) or o.get("info", {}).get("reduceOnly") == "true"
                                 if not ro:
                                     continue
