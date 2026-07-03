@@ -1,0 +1,97 @@
+{
+  "config": "sl1.0_no_trail_minconf4_nokc",
+  "params": {
+    "adx_required": true,
+    "daily_filter_enabled": true,
+    "kc_filter": false,
+    "min_confluences": 4,
+    "min_confluences_no_struct": 4,
+    "min_score": null,
+    "zigzag_window": 3,
+    "min_swing_diff_pct": 0.5,
+    "daily_trend_strict": false,
+    "sl_atr_mult": 1.0,
+    "tp1_rr": 1.2,
+    "tp2_rr": 2.0,
+    "trailing_sl_enabled": false
+  },
+  "watchlist": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "HYPE/USDT",
+    "XRP/USDT",
+    "LINK/USDT",
+    "BNB/USDT",
+    "SOL/USDT",
+    "VET/USDT"
+  ],
+  "leverage": 5,
+  "n_iterations_per_window": 50000,
+  "n_workers": 8,
+  "total_simulations": 100000,
+  "elapsed_seconds": 26.5,
+  "windows": {
+    "recent": {
+      "window": "recent",
+      "n_iterations": 50000,
+      "n_trades_real": 130,
+      "pnl": {
+        "min": -353.280393194912,
+        "max": 1007.3595350430599,
+        "p5": 26.666185214996396,
+        "p25": 174.46616937924367,
+        "median": 278.14196179017904,
+        "p75": 381.36107399644146,
+        "p95": 528.2752904799684,
+        "mean": 278.1785479987662,
+        "std": 152.77242366469864,
+        "prob_gain_pct": 96.55,
+        "var_95": 26.666185214996396,
+        "cvar_95": -35.782149787850784
+      },
+      "max_drawdown": {
+        "median": 42.981625091794285,
+        "p95": 111.38485723356423,
+        "prob_dd_gt_30_pct": 75.62,
+        "prob_dd_gt_50_pct": 39.14
+      },
+      "sharpe": {
+        "p5": 0.17763859897486425,
+        "median": 1.826746073108919,
+        "p95": 3.4811251794059452
+      },
+      "leverage": 5
+    },
+    "historical": {
+      "window": "historical",
+      "n_iterations": 50000,
+      "n_trades_real": 137,
+      "pnl": {
+        "min": -428.1746532374181,
+        "max": 1003.3345496432133,
+        "p5": 5.191404812044368,
+        "p25": 167.91216749214664,
+        "median": 281.43947801720225,
+        "p75": 394.08880693669096,
+        "p95": 555.0224339047429,
+        "mean": 281.10842706725066,
+        "std": 167.0033531065826,
+        "prob_gain_pct": 95.34,
+        "var_95": 5.191404812044368,
+        "cvar_95": -62.47534828266404
+      },
+      "max_drawdown": {
+        "median": 48.47227035580097,
+        "p95": 128.3980180397923,
+        "prob_dd_gt_30_pct": 81.67,
+        "prob_dd_gt_50_pct": 47.86
+      },
+      "sharpe": {
+        "p5": 0.03157217914821899,
+        "median": 1.6828759726799984,
+        "p95": 3.3568472947843926
+      },
+      "leverage": 5
+    }
+  }
+}
