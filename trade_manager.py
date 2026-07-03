@@ -603,10 +603,13 @@ async def sync_all(config: dict, exchange=None) -> None:
                 binance_by_norm[norm] = p
 
         # ── fetch_open_orders() : itère par symbole pour éviter le rate‑limit 40× ──
+        # IMPORTANT : l'API Binance Futures nécessite le format "BASE/USDT:USDT"
+        # (voir normalisation identique plus haut dans ce fichier, ex. ligne ~113).
         all_open_orders = []
         for db_sym in db_positions:
+            futures_sym = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
             try:
-                orders = await exchange.fetch_open_orders(db_sym)
+                orders = await exchange.fetch_open_orders(futures_sym)
                 all_open_orders.extend(orders)
             except Exception as e:
                 log.warning(f"sync_all: fetch_open_orders échoué pour {db_sym} ({e})")
@@ -740,8 +743,9 @@ async def sync_all(config: dict, exchange=None) -> None:
                         ord_exists = True
                 elif order_id:
                     # L'ordre n'est pas dans open_orders → peut être filled ou annulé
+                    futures_sym = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
                     try:
-                        o = await exchange.fetch_order(order_id, db_sym)
+                        o = await exchange.fetch_order(order_id, futures_sym)
                         status = o.get("status", "")
                         if status == "closed":
                             ord_filled = True
