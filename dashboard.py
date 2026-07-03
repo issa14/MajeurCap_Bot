@@ -138,7 +138,7 @@ async def get_dashboard_text() -> str:
         dd_limit  = risk_cfg.get("daily_loss_limit", -5.0)
         max_expo  = risk_cfg.get("max_exposure", 30)
 
-        realized_pnl          = sum(p.get("pnl_pct", 0) for p in closed_positions)
+        realized_pnl          = sum(p.get("pnl_pct") or 0 for p in closed_positions)
         win_rate, wins, nb_trades = compute_win_rate(closed_positions)
 
         is_breached  = await check_circuit_breaker(config, capital_override=equity)

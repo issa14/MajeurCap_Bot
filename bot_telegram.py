@@ -148,7 +148,7 @@ async def build_status_message() -> str:
         if bpos and bpos["pnl_pct"] is not None:
             pnl_pct = bpos["pnl_pct"]
             pnl_usd = bpos["pnl_usd"] if bpos["pnl_usd"] is not None else 0.0
-            leverage = bpos["leverage"]
+            leverage = bpos["leverage"] or 1.0
             pnl_emoji  = "✅" if pnl_pct >= 0 else "❌"
             total_pnl_usd += pnl_usd
 

@@ -601,12 +601,14 @@ async def sync_all(config: dict, exchange=None) -> None:
                 norm = _normalize_symbol(p["symbol"])
                 binance_by_norm[norm] = p
 
-        # ── fetch_open_orders() : tous les ordres ouverts en un seul appel ──
-        try:
-            all_open_orders = await exchange.fetch_open_orders()
-        except Exception as e:
-            log.warning(f"sync_all: fetch_open_orders échoué ({e}), skip vérification ordres")
-            all_open_orders = []
+        # ── fetch_open_orders() : itère par symbole pour éviter le rate‑limit 40× ──
+        all_open_orders = []
+        for db_sym in db_positions:
+            try:
+                orders = await exchange.fetch_open_orders(db_sym)
+                all_open_orders.extend(orders)
+            except Exception as e:
+                log.warning(f"sync_all: fetch_open_orders échoué pour {db_sym} ({e})")
 
         # Indexer les ordres par ID pour lookup rapide
         open_by_id = {o["id"]: o for o in all_open_orders}

@@ -7,7 +7,8 @@ import argparse
 import asyncio
 import sys
 import logging
-import signal
+import os
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 # Configuration du logging global
@@ -20,6 +21,50 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("DPSK")
+
+# ─── PID‑file anti‑double‑lancement ───────────────────────────────────────────
+PID_FILE = Path(".bot.pid")
+
+def _pid_is_running(pid: int) -> bool:
+    """Vérifie si un processus avec le PID donné est en cours d'exécution."""
+    try:
+        os.kill(pid, 0)  # signal 0 = test uniquement, ne kill pas
+        return True
+    except (OSError, ProcessLookupError, PermissionError):
+        return False
+
+def _acquire_pid_lock() -> bool:
+    """
+    Écrit le PID courant dans .bot.pid après avoir vérifié qu'aucune autre
+    instance n'est déjà en cours. Retourne True si le lock a été acquis.
+    """
+    current_pid = os.getpid()
+
+    if PID_FILE.exists():
+        try:
+            stored_pid = int(PID_FILE.read_text().strip() or "0")
+        except (ValueError, FileNotFoundError):
+            stored_pid = 0
+
+        if stored_pid and stored_pid != current_pid and _pid_is_running(stored_pid):
+            log.critical(
+                f"Il y a déjà une instance du bot qui tourne (PID {stored_pid}). "
+                f"Arrêtez‑la d'abord (`kill {stored_pid}`) ou attendez son arrêt."
+            )
+            return False
+
+    PID_FILE.write_text(str(current_pid))
+    return True
+
+def _release_pid_lock() -> None:
+    """Supprime le fichier .bot.pid si c'est bien notre PID qui est dedans."""
+    try:
+        if PID_FILE.exists():
+            stored = PID_FILE.read_text().strip()
+            if stored == str(os.getpid()):
+                PID_FILE.unlink()
+    except Exception:
+        pass
 
 async def run_live():
     """Lance une itération du bot de trading."""
@@ -65,6 +110,12 @@ def main():
 
     args = parser.parse_args()
 
+    # Les modes longue durée nécessitent un lock pour éviter le double lancement
+    needs_lock = args.live or args.listen or args.all
+    if needs_lock and not _acquire_pid_lock():
+        log.critical("Impossible d'acquérir le lock PID — bot déjà en cours d'exécution. Abandon.")
+        sys.exit(1)
+
     try:
         if args.live:
             asyncio.run(run_live())
@@ -81,6 +132,9 @@ def main():
     except Exception as e:
         log.error(f"Erreur fatale : {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        if needs_lock:
+            _release_pid_lock()
 
 if __name__ == "__main__":
     main()

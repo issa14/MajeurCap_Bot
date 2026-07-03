@@ -1,114 +1,134 @@
-# MajeurCap - Crypto Trading Bot (Production Ready)
+## 🧾 DPSK – Résumé du Projet (v2 — Juillet 2026)
 
-MajeurCap is a modular, high-performance cryptocurrency trading bot designed for automated technical analysis, signal generation, and trade execution on Binance. Featuring a fully asynchronous architecture with built-in risk management and automatic safety mechanisms.
+- **Type :** Trading bot algorithmique multi-paires sur Futures
+- **Objectif :** Automatiser une stratégie de trading sur Binance Futures (Testnet → Production) avec backtest, optimisation Monte‑Carlo, exécution réelle, supervision Telegram et dashboard web.
+- **Exchange :** Binance Futures (via `ccxt`) — Demo/Testnet activé par défaut
+- **Timeframe :** 4h (principal), données daily pour le filtre de tendance
+- **Watchlist :** BTC, ETH, HYPE, XRP, LINK, BNB, SOL, VET (8 paires)
 
-## Project Overview
 
-- **Core Technology:** Python 3.14+, `asyncio`, `aiohttp`
-- **APIs:** CCXT (Binance Futures Demo/Mainnet), Telegram Bot API.
-- **Data Analysis:** Pandas, NumPy, ta (TA-Lib wrapper).
-- **Architecture:** Fully asynchronous, robust modular design.
-- **Strategy:** Multi-indicator confluence (EMA, RSI, ATR, Zigzag, Keltner Channels) + Smart Money Concepts (BOS, CHoCH). Features dynamic Fibonacci proximity, ADX trend filtering, and dynamic position sizing based on ADX.
-- **Safety:** Circuit breaker (daily drawdown stop), Exchange-side SL & TP placement (survives crashes), Auto-cleanup of orphan orders, Graceful Shutdown handling, Position reconciliation on startup.
+### Architecture & Modules (version réelle)
 
-## Directory Structure
+1. **`module1_data_v3.py`** — Récupération des données OHLCV
+   - Connexion async à Binance Futures via `ccxt.async_support`
+   - Cache fichier JSON avec TTL (240 min par défaut)
+   - Fonctions : `init_exchange_async()`, `fetch_ohlcv_async()`, `fetch_all_async()`, `fetch_daily_all_async()`
+   - Ajout de la colonne `is_closed` pour distinguer bougies en cours/terminées
 
-- `main.py`: CLI entry point. Modes: `--live` (trading cycle), `--listen` (Telegram listener), `--all` (both), `--backtest`, `--check`.
-- `bot_telegram.py`: Main trading loop. Optimised cycles: 60s position monitoring / 15min signal scan. Signal deduplication via cooldown.
-- `bot_listener.py`: Telegram command interface (polling). Commands: `/db` (dashboard), `/start`. (`/status` not yet implemented — pending Phase 8)
-- `trade_manager.py`: Position management, trailing SL (ATR-based), exchange order sync & cleanup, JSON→SQLite migration, startup reconciliation (DB vs Binance), periodic position sync with exchange.
-- `execution.py`: Order placement (Binance Futures Demo/Mainnet). Supports entry market order + SL (STOP_MARKET) + TP1 (TAKE_PROFIT_MARKET 50%) + TP2 (TAKE_PROFIT_MARKET 100%). Stop-loss update for trailing.
-- `risk_manager.py`: Leverage-aware position sizing with ADX dynamic multiplier, exposure cap, max positions limit, and capital-available check.
-- `module1_data_v3.py`: Async OHLCV fetching (multi-timeframe support, 1h default + daily optional).
-- `module2_AT.py`: Technical analysis (EMA, RSI, ATR, ADX, Keltner Channels, Zigzag pivot detection).
-- `module3_signal.py`: SMC Signal logic (BOS, CHoCH, Fibonacci proximity, KC breakout, RSI divergence). Best direction selection by confluence score.
-- `module4_backtest.py`: Backtesting framework with realistic fees/slippage.
-- `backtest_multi.py`: Multi-scenario analysis with leverage and signal quality matrix.
-- `backtest_sl_tp.py`: SL/TP optimisation backtesting.
-- `backtest_sl_comparison.py`: Comparative backtest sl_atr_mult 1.0 vs 2.0 on two time windows (recent + historical). Uses fixed leverage from config.yaml.
-- `dashboard.py`: Terminal dashboard (rich text) and Telegram Markdown dashboard. Metrics: equity, exposure, daily drawdown, win rate, unrealized PnL, active positions with SL distance.
-- `dashboard_api.py`: FastAPI REST API (port 8000) serving JSON data for the web dashboard (`/api/dashboard`, `/api/history`, `/api/signals`). Includes CCXT Binance Demo retry logic for StreamReader bug.
-- `dashboard.html`: HTML/CSS/JS web dashboard consuming `dashboard_api.py`.
-- `database.py`: SQLite database manager. Tables: `positions` (active & history), `signal_cooldowns` (Telegram spam prevention), `signals_log` (signal history for dashboard). Auto-migration for missing columns.
-- `config_loader.py`: YAML config loader with `load_config()`, `get_config()` (cached), `reload_config()` (forced).
-- `telegram_utils.py`: Centralized Telegram message sender (`send_telegram`) with HTML parse mode and aiohttp.
-- `metrics.py`: Performance metrics calculation (win rate, profit factor, Sharpe, Calmar, max drawdown) from a trades DataFrame.
-- `init_equity.py`: Utility to compute and save initial equity (calls `dashboard.get_equity_data`).
-- `check_connection.py`: Diagnostic tool to verify Binance API connection (balance + orders fetch).
-- `check_balance.py`: CLI tool to display account balances filtered by watchlist assets.
-- `close_all_positions.py`: Utility to cancel all orders and sell non-USDT assets (Spot).
-- `reset_bot.sh`: Shell script to stop the bot, wipe the database, delete logs, and restart.
-- `config.yaml`: Global production configuration (not tracked in git — see `config.yaml.example`).
-- `trading_bot.db`: SQLite database for persistent trade state (schema for orders & positions).
-- `test_indicators.py`, `test_integration.py`, `test_signal_generation.py`, `test_trailing_sl.py`: Unit/integration tests.
+2. **`module2_AT.py`** — Analyse technique
+   - EMA (20, 50, 200), ATR, RSI, Keltner Channels, ADX
+   - Zigzag causal (sans look-ahead bias) avec alternance stricte
+   - Détection de structure de marché via `detect_structure()` (appel à `module3_signal`)
+   - Support/Résistance par pivots, Volume Profile simplifié
+   - Fonctions clés : `compute_indicators()`, `compute_zigzag()`, `clean_ohlcv()`
 
-## Building and Running
+3. **`module3_signal.py`** — Génération de signaux
+   - Scoring multi-facteurs : tendance (EMA + ADX), momentum (RSI), Keltner, volume
+   - Détection de confluences (minimum 4 pour un signal valide — config gagnante Monte Carlo)
+   - Fibonacci depuis les swings du zigzag
+   - Filtres : daily trend, ADX threshold, range market
+   - Fonctions : `generate_signal()`, `generate_signal_mtf()`, `scan_all()`
 
-### Prerequisites
-- Python 3.14+
-- Active virtual environment: `source env/bin/activate`
+4. **`module4_backtest.py`** — Backtest & simulation
+   - Simulation P&L avec frais, slippage, SL/TP configurables
+   - Mode multi-timeframe, SL trailing/ATR
+   - Variantes : `backtest_multi.py`, `backtest_sl_comparison.py`, `backtest_winner.py`
 
-### Installation
-```bash
-pip install -r requirements.txt
+5. **`optimizer_mc.py`** — Optimisation Monte Carlo des hyperparamètres
+   - Grille : min_confluences × sl_atr_mult × kc_filter × nos
+   - Scoring anti-overfitting : max(min(score_recent, score_historical))
+   - Export JSON des résultats
+
+6. **`monte_carlo_validation.py`** — Validation Monte Carlo
+   - Bootstrapping d'equity curve (50 000 simulations)
+   - Probabilité de gain, Drawdown > 50%, Sharpe P5
+   - Critères de validation stricts (≥95%, ≤10%, ≥0.5)
+
+7. **`main.py`** — CLI asynchrone (point d'entrée)
+   - Modes : `--live`, `--listen`, `--all`, `--backtest`, `--check`
+   - PID lock anti-double-lancement (`.bot.pid`)
+   - `run_live()` → `bot_telegram.main()` (pipeline complet)
+   - `run_all()` → bot + listener Telegram en parallèle
+
+8. **`bot_telegram.py`** — Orchestrateur principal
+   - `main()` → boucle infinie de scan
+   - `scan_all()` → Module 1 → Module 2 → Module 3 → Risk Manager → Exécution
+   - `manage_positions()` → suivi des positions ouvertes (SL/TP/trailing)
+   - Heartbeat périodique, reconciliation DB/Binance
+
+9. **`trade_manager.py`** — Gestion des positions
+   - `open_position()` — création d'ordre avec SL/TP
+   - `check_position()` — suivi post-entrée (TP1 partiel, trailing SL, TP2, SL)
+   - `manage_positions()` — boucle sur toutes les positions actives
+   - Persistance JSON + DB
+
+10. **`risk_manager.py`** — Gestion du risque
+    - `calculate_position_size()` — taille selon capital et risk_per_trade
+    - Vérifications : exposition max, nombre max de positions, daily loss limit
+    - Circuit breaker si daily_loss_limit atteinte
+
+11. **`execution.py`** — Passerelle Binance Futures
+    - `init_trading_exchange()` — connexion avec clés API
+    - `execute_signal()` — ordre MARKET avec SL/TP conditionnels
+    - `update_sl_order()` — modification du SL (trailing)
+    - `fetch_positions_pnl()` — P&L non réalisé depuis l'exchange
+
+12. **`database.py`** — Base de données SQLite
+    - Tables : signal_logs, positions (via JSON + DB)
+    - `DatabaseManager` avec méthodes CRUD
+    - `cleanup_old_records()` — purge automatique
+
+13. **`dashboard.py` & `dashboard_api.py` & `dashboard.html`**
+    - Backend : FastAPI (pas Flask)
+    - Frontend : HTML responsive avec dark mode
+    - Endpoints : `/api/equity`, `/api/positions`, `/api/performance`
+
+14. **`bot_listener.py`** — Listener Telegram
+    - Polling des commandes utilisateur
+    - Commandes : /start, /status, /performance, /risk, /trades, /pnl, /help
+
+15. **`telegram_utils.py`** — Utilitaires Telegram
+    - `send_telegram()` — envoi de messages formatés HTML
+    - Gestion des messages longs (découpage)
+
+16. **`config_loader.py`** — Chargement YAML
+    - `load_config()` / `get_config()` (avec cache)
+    - `reload_config()` — rechargement à chaud
+
+17. **`metrics.py`** — Métriques de performance
+    - Sharpe, Sortino, Calmar, Max Drawdown, Win Rate, Profit Factor
+
+
+### Flux d'exécution réel
+
+```
+main.py --all
+  ├─ run_live()
+  │   └─ bot_telegram.main()          ← boucle infinie
+  │       ├─ module1: fetch_all_async() + fetch_daily_all_async()
+  │       ├─ module2: compute_indicators() + detect_structure()
+  │       ├─ module3: scan_all() → generate_signal() pour chaque paire
+  │       ├─ risk_manager: calculate_position_size() + filtres
+  │       ├─ execution: execute_signal() → ordre Binance
+  │       └─ trade_manager: manage_positions() → suivi SL/TP/trailing
+  └─ run_listener()
+      └─ bot_listener: poll_updates() → commandes Telegram
 ```
 
-### Running the Bot (Development)
-- **Live Trading:** `python main.py --live`
-- **Telegram Listener:** `python main.py --listen`
-- **Full Bot:** `python main.py --all`
-- **Backtest:** `python main.py --backtest`
-- **Connection Check:** `python main.py --check`
-- **Dashboard API:** `python dashboard_api.py` (then open `dashboard.html` in browser)
 
-### Running in Production (Linux/Systemd)
-To ensure the bot restarts automatically on system boot or crash, deploy it as a systemd service:
+### Configuration gagnante (Monte Carlo — Juillet 2026)
 
-1. Create `/etc/systemd/system/dpsk_bot.service` with your user details.
-2. `sudo systemctl daemon-reload`
-3. `sudo systemctl enable dpsk_bot`
-4. `sudo systemctl start dpsk_bot`
+| Paramètre | Valeur |
+|-----------|--------|
+| `min_confluences` | **4** |
+| `min_confluences_no_struct` | 4 |
+| `kc_filter` | **true** |
+| `sl_atr_mult` | 1.0 |
+| `trailing_sl_enabled` | **false** |
+| `daily_loss_limit` | -5% |
+| `leverage` | 5x |
+| `risk_per_trade` | 1% |
+| `max_positions` | 5 |
+| `max_exposure` | 30% |
 
-## Development Conventions
-
-- **Modularity:** Keep logic separated into `moduleX` files.
-- **Asynchronous Code:** `asyncio` mandatory for network I/O.
-- **Safety First:** All positions protected by SL + TP1 + TP2 orders placed directly on Binance Futures.
-- **Orphan Cleanup:** Automatic cancellation of exchange orders upon software-detected exit.
-- **Logging:** Use standard `logging` with `RotatingFileHandler` (10 MB, 5 backups).
-- **Config Hot-Reload:** Config is checked for file modification time each cycle and reloaded automatically.
-
-## Roadmap Status (Updated)
-
-### Phase 7: Dashboard API, Reconciliation & Resilience (DONE)
-- [x] **Dashboard API (FastAPI):** REST endpoint (`/api/dashboard`, `/api/history`, `/api/signals`) for web dashboard consumption.
-- [x] **Web Dashboard:** `dashboard.html` with interactive HTML/CSS/JS UI.
-- [x] **Startup Reconciliation:** DB positions compared against real Binance positions on startup — missing positions closed, orphan positions alerted.
-- [x] **Periodic Position Sync:** `sync_position_with_exchange()` detects manual quantity/price changes on Binance each cycle.
-- [ ] **Telegram Heartbeat + /status command:** Periodic status message (active positions + PnL) via `heartbeat_minutes` + `/status` Telegram command. (Pending Phase 8 — not yet implemented)
-- [x] **Signal Logging:** All detected signals (traded or rejected) logged to `signals_log` table and exposed via API.
-- [x] **Telegram Utils Centralization:** `telegram_utils.py` for all Telegram message sending.
-- [x] **ADX Dynamic Position Sizing:** Position size adjusts based on ADX trend strength (0.5×–1.5× multiplier).
-- [x] **CCXT Demo Retry Logic:** Retry wrapper for `fetch_balance`/`fetch_tickers` to handle Binance Demo StreamReader bug.
-- [x] **Emergency SL Failure Handling:** If SL placement fails after entry, emergency exit order is placed and alert sent.
-- [x] **DB Insert Failure Guard:** If DB insert fails after exchange order placement, a detailed Telegram alert is sent with all order IDs for manual repair.
-- [x] **Scripts:** `check_connection.py`, `check_balance.py`, `close_all_positions.py`, `init_equity.py`, `reset_bot.sh`.
-
-### Phase 6: Precision & Resilience (DONE)
-- [x] **Smart Money Concepts (SMC):** Implementation of BOS (Break of Structure) and CHoCH (Change of Character) confluences.
-- [x] **Dynamic Fibonacci:** Proximity threshold now adapts to market volatility (ATR%).
-- [x] **Exchange-Side Take Profits:** TP1 (50%) and TP2 (100%) placed as `TAKE_PROFIT_MARKET` orders.
-- [x] **Cycle Optimisation:** Split monitoring (60s) from scanning (15m) to reduce API load.
-- [x] **Leverage-Aware Sizing:** Correct quantity calculation for Futures (risk/leverage).
-- [x] **Orphan Order Cleanup:** Systematic cancellation of SL/TP on Binance when a trade is closed in software.
-- [x] **Optimized Signal Selection:** Evaluation of both directions to select the max confluence score.
-- [x] **Backtest Matrix v2:** Automated comparison of signal quality axes (Daily filter, KC, Min Conf).
-
-### Phase 5: Technical Debt, Stability & Final Audit (DONE)
-- [x] Async Integrity (aiohttp migration).
-- [x] Config Hot Reload (`reload_config`).
-- [x] Advanced Metrics (Drawdown, Sharpe, Calmar).
-- [x] O(n²) bottleneck fix in backtest.
-- [x] Robust signal handling (look-ahead bias, orphan parameters, log rotation).
-- [x] Graceful Shutdown (SIGTERM handling + SIGTERM handler).
-- [x] Professional Dashboard monitoring (Liveness, Exposure, DD tracking).
+Score de robustesse : 217.5 (vs 72.1 pour l'ancienne config min_conf=3)
