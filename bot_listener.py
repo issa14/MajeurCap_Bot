@@ -107,6 +107,15 @@ async def poll_updates():
                         log.warning(f"Message rejeté — sender_id non autorisé : {sender_id}")
                         continue
 
+                    # Toute commande autre que /confirm_closeall annule une confirmation
+                    # /closeall en attente pour ce chat (comportement annoncé au user).
+                    if (
+                        msg_chat_id in _pending_closeall
+                        and not text.strip().startswith("/confirm_closeall")
+                    ):
+                        del _pending_closeall[msg_chat_id]
+                        log.info(f"/closeall annulé (autre commande reçue) pour chat {msg_chat_id}")
+
                     # ── /db  /dashboard ──────────────────────────────────────
                     if text.startswith("/db") or text.startswith("/dashboard"):
                         log.info("📥 Commande reçue : Dashboard")

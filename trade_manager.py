@@ -564,8 +564,9 @@ async def sync_all(config: dict, exchange=None) -> None:
     """
     Réconciliation unifiée DB ↔ Binance (positions + ordres SL/TP).
 
-    Avec seulement 2 appels API (fetch_positions + fetch_open_orders),
-    cette fonction :
+    Appels API : 1x fetch_positions() + 1x fetch_open_orders(symbol) par
+    position active en DB (pour éviter le poids 40 du fetch_open_orders()
+    global sur Binance). Cette fonction :
     1. Compare les quantités DB vs Binance → met à jour la DB
     2. Détecte les positions disparues de Binance → marque closed
     3. Détecte les positions orphelines sur Binance (pas en DB) → alerte
