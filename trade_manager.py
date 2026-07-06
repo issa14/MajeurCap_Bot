@@ -524,6 +524,96 @@ async def _detect_exit_from_binance(
     }
 
 
+async def _handle_position_missing_on_exchange(
+    exchange,
+    db_sym: str,
+    pos: dict,
+    direction: str,
+    sl_price: float,
+    tp1_price: float,
+    tp2_price: float,
+    db_qty: float,
+    config: dict,
+) -> None:
+    """Gère le cas où une position active en DB est absente de Binance.
+
+    Tente de détecter une clôture via l'historique d'ordres (_detect_exit_from_binance).
+    Si détectée : marque la position CLOSED avec le PnL réel. Sinon : marque
+    UNRESOLVED et alerte pour review manuelle (pas de fermeture aveugle).
+
+    Extrait de sync_all() à l'étape 7 du refactor — logique inchangée. Ne
+    retourne rien : purement des effets de bord (DB + Telegram). L'appelant
+    (sync_all) fait un `continue` inconditionnel juste après l'appel.
+    """
+    pos_id = pos["id"]
+    raw_symbol = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
+    exit_info = await _detect_exit_from_binance(exchange, raw_symbol, pos, config)
+
+    reconcile_details = {
+        "db_sym": db_sym,
+        "pos_id": pos_id,
+        "direction": direction,
+        "db_qty": db_qty,
+        "entry": pos.get("entry_price") or pos.get("entry"),
+        "sl": sl_price,
+        "tp1": tp1_price,
+        "tp2": tp2_price,
+        "detected": exit_info is not None,
+        "fills_count": len(exit_info["fills"]) if exit_info and "fills" in exit_info else 0,
+    }
+
+    if exit_info:
+        log.warning(
+            f"sync_all {db_sym} — clôture détectée via historique : "
+            f"{exit_info['exit_reason']} prix_moy={exit_info['exit_price']} PnL={exit_info['pnl_pct']:+.2f}%"
+        )
+        db.update_position(pos_id, {
+            "status": "closed",
+            "exit_reason": exit_info["exit_reason"],
+            "exit_price": exit_info["exit_price"],
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+            "pnl_usd": exit_info["pnl_usd"],
+            "pnl_pct": exit_info["pnl_pct"],
+        })
+        db.bump_reconcile_version(pos_id)
+        db.insert_reconcile_log(pos_id, "CLOSED_ON_EXCHANGE", {
+            **reconcile_details,
+            "exit_reason": exit_info["exit_reason"],
+            "exit_price": exit_info["exit_price"],
+            "pnl_usd": exit_info["pnl_usd"],
+            "pnl_pct": exit_info["pnl_pct"],
+            "filled_qty": exit_info.get("filled_qty"),
+            "fills": exit_info.get("fills", []),
+        })
+
+        emoji = "✅" if exit_info["pnl_pct"] > 0 else "❌"
+        asyncio.create_task(send_telegram(
+            f"{emoji} {db_sym} {direction} clôturé ({exit_info['exit_reason']})\n"
+            f"Prix sortie : {exit_info['exit_price']}\nPnL : {exit_info['pnl_pct']:+.2f}%",
+            config
+        ))
+    else:
+        # ⚠️ Pas de fermeture aveugle → statut UNRESOLVED + audit + alerte
+        log.warning(
+            f"sync_all {db_sym} — absente de Binance, aucun historique ordre → UNRESOLVED"
+        )
+        db.update_position(pos_id, {
+            "status": "unresolved",
+            "exit_reason": "RECONCILE_UNRESOLVED",
+            "exit_date": datetime.now(timezone.utc).isoformat(),
+        })
+        db.bump_reconcile_version(pos_id)
+        db.insert_reconcile_log(pos_id, "POSITION_VANISHED", reconcile_details)
+
+        asyncio.create_task(send_telegram(
+            f"🟡 RECONCILE {db_sym} — Position active en DB mais DISPARUE de Binance.\n"
+            f"Aucun historique d'ordre trouvé.\n"
+            f"Passée en statut UNRESOLVED — review manuelle nécessaire !\n"
+            f"Entry: {pos.get('entry_price')} | Direction: {direction} | Qty DB: {db_qty}",
+            config
+        ))
+
+
 async def sync_all(config: dict, exchange=None) -> None:
     """
     Réconciliation unifiée DB ↔ Binance (positions + ordres SL/TP) — v2.
@@ -598,75 +688,13 @@ async def sync_all(config: dict, exchange=None) -> None:
 
             # ══════════════════════════════════════════════════════════════
             # Cas A — Position en DB mais absente de Binance
-            # Machine d'état : ACTIVE → MISSING_ON_EXCHANGE → CLOSED | UNRESOLVED
             # ══════════════════════════════════════════════════════════════
             if norm_sym not in binance_by_norm:
-                raw_symbol = f"{db_sym}:USDT" if db_sym.endswith('/USDT') else db_sym
-                exit_info = await _detect_exit_from_binance(exchange, raw_symbol, pos, config)
-
-                reconcile_details = {
-                    "db_sym": db_sym,
-                    "pos_id": pos_id,
-                    "direction": direction,
-                    "db_qty": db_qty,
-                    "entry": pos.get("entry_price") or pos.get("entry"),
-                    "sl": sl_price,
-                    "tp1": tp1_price,
-                    "tp2": tp2_price,
-                    "detected": exit_info is not None,
-                    "fills_count": len(exit_info["fills"]) if exit_info and "fills" in exit_info else 0,
-                }
-
-                if exit_info:
-                    log.warning(
-                        f"sync_all {db_sym} — clôture détectée via historique : "
-                        f"{exit_info['exit_reason']} prix_moy={exit_info['exit_price']} PnL={exit_info['pnl_pct']:+.2f}%"
-                    )
-                    db.update_position(pos_id, {
-                        "status": "closed",
-                        "exit_reason": exit_info["exit_reason"],
-                        "exit_price": exit_info["exit_price"],
-                        "exit_date": datetime.now(timezone.utc).isoformat(),
-                        "pnl_usd": exit_info["pnl_usd"],
-                        "pnl_pct": exit_info["pnl_pct"],
-                    })
-                    db.bump_reconcile_version(pos_id)
-                    db.insert_reconcile_log(pos_id, "CLOSED_ON_EXCHANGE", {
-                        **reconcile_details,
-                        "exit_reason": exit_info["exit_reason"],
-                        "exit_price": exit_info["exit_price"],
-                        "pnl_usd": exit_info["pnl_usd"],
-                        "pnl_pct": exit_info["pnl_pct"],
-                        "filled_qty": exit_info.get("filled_qty"),
-                        "fills": exit_info.get("fills", []),
-                    })
-
-                    emoji = "✅" if exit_info["pnl_pct"] > 0 else "❌"
-                    asyncio.create_task(send_telegram(
-                        f"{emoji} {db_sym} {direction} clôturé ({exit_info['exit_reason']})\n"
-                        f"Prix sortie : {exit_info['exit_price']}\nPnL : {exit_info['pnl_pct']:+.2f}%",
-                        config
-                    ))
-                else:
-                    # ⚠️ Pas de fermeture aveugle → statut UNRESOLVED + audit + alerte
-                    log.warning(
-                        f"sync_all {db_sym} — absente de Binance, aucun historique ordre → UNRESOLVED"
-                    )
-                    db.update_position(pos_id, {
-                        "status": "unresolved",
-                        "exit_reason": "RECONCILE_UNRESOLVED",
-                        "exit_date": datetime.now(timezone.utc).isoformat(),
-                    })
-                    db.bump_reconcile_version(pos_id)
-                    db.insert_reconcile_log(pos_id, "POSITION_VANISHED", reconcile_details)
-
-                    asyncio.create_task(send_telegram(
-                        f"🟡 RECONCILE {db_sym} — Position active en DB mais DISPARUE de Binance.\n"
-                        f"Aucun historique d'ordre trouvé.\n"
-                        f"Passée en statut UNRESOLVED — review manuelle nécessaire !\n"
-                        f"Entry: {pos.get('entry_price')} | Direction: {direction} | Qty DB: {db_qty}",
-                        config
-                    ))
+                await _handle_position_missing_on_exchange(
+                    exchange=exchange, db_sym=db_sym, pos=pos, direction=direction,
+                    sl_price=sl_price, tp1_price=tp1_price, tp2_price=tp2_price,
+                    db_qty=db_qty, config=config,
+                )
                 continue
 
             bpos = binance_by_norm[norm_sym]
