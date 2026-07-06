@@ -114,15 +114,15 @@ pytest tests/ -v
 
 ```mermaid
 flowchart TD
-    D[Données 4H CCXT] --> AT[module2_AT.py : Indicateurs]
-    AT --> SIG[module3_signal.py : Confluences]
-    SIG --> RM[risk_manager.py : Sizing + Exposition]
-    RM --> EXEC[execution.py : Ordres SL/TP1/TP2]
-    EXEC --> SYNC[sync_all() : Réconciliation]
-    SYNC --> PROT[sync_engine/protection.py]
-    SYNC --> REC[sync_engine/reconciliation.py]
-    SYNC --> TG[Telegram Alertes]
-    SYNC --> DB[(SQLite)]
+    D["Données 4H CCXT"] --> AT["module2_AT.py : Indicateurs"]
+    AT --> SIG["module3_signal.py : Confluences"]
+    SIG --> RM["risk_manager.py : Sizing / Exposition"]
+    RM --> EXEC["execution.py : Ordres SL / TP1 / TP2"]
+    EXEC --> SYNC["sync_all() : Réconciliation"]
+    SYNC --> PROT["sync_engine/protection.py"]
+    SYNC --> REC["sync_engine/reconciliation.py"]
+    SYNC --> TG["Telegram Alertes"]
+    SYNC --> DB[("SQLite")]
 ```
 
 ```
