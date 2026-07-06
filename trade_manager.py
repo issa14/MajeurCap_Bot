@@ -645,6 +645,105 @@ async def _report_orphan_position(norm_sym: str, bpos: dict, config: dict) -> No
     ))
 
 
+async def _align_db_with_exchange(
+    pos: dict,
+    pos_id: int,
+    db_sym: str,
+    direction: str,
+    bpos: dict,
+    db_qty: float,
+    config: dict,
+) -> dict:
+    """Aligne la position DB sur l'état réel de la position Binance.
+
+    B1 — Divergence de direction ou d'entry price entre DB et Binance : alerte
+    CRITICAL, aucune correction automatique (résolution manuelle requise).
+    B2 — Correction de la quantité DB si elle diverge de >1% de celle de
+    Binance. Si la quantité résiduelle est quasi nulle (<5%), marque la position
+    CLOSED.
+
+    Extrait de sync_all() à l'étape 9 du refactor — logique inchangée.
+
+    Retourne un dict avec :
+      should_continue: bool — True si l'appelant doit faire `continue`
+      exchange_qty: float — la qty réelle sur Binance (nécessaire pour le Cas C)
+    """
+    import json as _json
+
+    exchange_qty = float(bpos.get("contracts", 0))
+    exchange_entry = float(bpos.get("entryPrice") or 0)
+    exchange_side = bpos.get("side", "")
+
+    # B1 — divergence de direction ou entry → alerte critique
+    db_direction = direction.upper()
+    binance_direction = "LONG" if exchange_side == "long" else ("SHORT" if exchange_side == "short" else "")
+    db_entry = pos.get("entry_price") or pos.get("entry") or 0
+    entry_divergence = db_entry > 0 and exchange_entry > 0 and abs(exchange_entry - db_entry) / db_entry > 0.01
+    direction_divergence = binance_direction and db_direction != binance_direction
+
+    if direction_divergence or entry_divergence:
+        crit_details = {
+            "db_direction": db_direction,
+            "binance_direction": binance_direction,
+            "direction_match": not direction_divergence,
+            "db_entry": db_entry,
+            "binance_entry": exchange_entry,
+            "entry_match": not entry_divergence,
+        }
+        log.critical(f"sync_all {db_sym} — DIVERGENCE CRITIQUE DB↔Binance : {_json.dumps(crit_details)}")
+        db.bump_reconcile_version(pos_id)
+        db.insert_reconcile_log(pos_id, "CRITICAL_DIVERGENCE", {
+            "crit_details": crit_details,
+            "db_pos": {k: str(v) for k, v in pos.items() if k != "raw"},
+            "binance_pos_raw": {
+                "symbol": bpos.get("symbol"),
+                "side": exchange_side,
+                "contracts": exchange_qty,
+                "entryPrice": exchange_entry,
+                "unrealizedPnl": bpos.get("unrealizedPnl"),
+            },
+        })
+        asyncio.create_task(send_telegram(
+            f"🚨 CRITICAL {db_sym} — DIVERGENCE DB↔Binance détectée !\n"
+            f"DB: {db_direction} entry={db_entry} qty={db_qty}\n"
+            f"Binance: {binance_direction} entry={exchange_entry} qty={exchange_qty}\n"
+            f"⚠️ Résolution manuelle requise — le bot NE FERME PAS cette position.\n"
+            f"Corriger la DB ou fermer manuellement sur Binance.",
+            config
+        ))
+        return {"should_continue": True, "exchange_qty": exchange_qty}
+
+    # B2 — correction quantité
+    if db_qty > 0 and abs(exchange_qty - db_qty) > (0.01 * db_qty):
+        db.update_position(pos_id, {"current_quantity": exchange_qty})
+        db.bump_reconcile_version(pos_id)
+        db.insert_reconcile_log(pos_id, "QTY_MISMATCH", {
+            "db_qty": db_qty,
+            "exchange_qty": exchange_qty,
+            "delta_pct": round(abs(exchange_qty - db_qty) / db_qty * 100, 2),
+        })
+        log.info(f"sync_all {db_sym} — qty corrigée: {db_qty} → {exchange_qty}")
+
+        if exchange_qty < (db_qty * 0.05):
+            db.update_position(pos_id, {
+                "status": "closed",
+                "exit_reason": "RECONCILE_FULLY_CLOSED",
+                "exit_date": datetime.now(timezone.utc).isoformat(),
+            })
+            db.bump_reconcile_version(pos_id)
+            db.insert_reconcile_log(pos_id, "FULLY_CLOSED_QTY_ZERO", {
+                "db_qty": db_qty,
+                "exchange_qty": exchange_qty,
+            })
+            asyncio.create_task(send_telegram(
+                f"⚠️ {db_sym} — Position fermée (qty résiduelle ~0 sur Binance).",
+                config
+            ))
+            return {"should_continue": True, "exchange_qty": exchange_qty}
+
+    return {"should_continue": False, "exchange_qty": exchange_qty}
+
+
 async def sync_all(config: dict, exchange=None) -> None:
     """
     Réconciliation unifiée DB ↔ Binance (positions + ordres SL/TP) — v2.
@@ -665,7 +764,6 @@ async def sync_all(config: dict, exchange=None) -> None:
     Appels API : 1x fetch_positions() + 1x fetch_open_orders(symbol) par position active.
     Audit trail : chaque divergence est loguée dans reconcile_log.
     """
-    import json as _json
 
     auto_exec = config.get("execution", {}).get("auto_execute", False)
     if not auto_exec:
@@ -733,76 +831,13 @@ async def sync_all(config: dict, exchange=None) -> None:
             # ══════════════════════════════════════════════════════════════
             # Cas B — Les deux existent : aligner DB sur Binance
             # ══════════════════════════════════════════════════════════════
-            exchange_qty = float(bpos.get("contracts", 0))
-            exchange_entry = float(bpos.get("entryPrice") or 0)
-            exchange_side = bpos.get("side", "")
-
-            # B1 — divergence de direction ou entry → alerte critique
-            db_direction = direction.upper()
-            binance_direction = "LONG" if exchange_side == "long" else ("SHORT" if exchange_side == "short" else "")
-            db_entry = pos.get("entry_price") or pos.get("entry") or 0
-            entry_divergence = db_entry > 0 and exchange_entry > 0 and abs(exchange_entry - db_entry) / db_entry > 0.01
-            direction_divergence = binance_direction and db_direction != binance_direction
-
-            if direction_divergence or entry_divergence:
-                crit_details = {
-                    "db_direction": db_direction,
-                    "binance_direction": binance_direction,
-                    "direction_match": not direction_divergence,
-                    "db_entry": db_entry,
-                    "binance_entry": exchange_entry,
-                    "entry_match": not entry_divergence,
-                }
-                log.critical(f"sync_all {db_sym} — DIVERGENCE CRITIQUE DB↔Binance : {_json.dumps(crit_details)}")
-                db.bump_reconcile_version(pos_id)
-                db.insert_reconcile_log(pos_id, "CRITICAL_DIVERGENCE", {
-                    "crit_details": crit_details,
-                    "db_pos": {k: str(v) for k, v in pos.items() if k != "raw"},
-                    "binance_pos_raw": {
-                        "symbol": bpos.get("symbol"),
-                        "side": exchange_side,
-                        "contracts": exchange_qty,
-                        "entryPrice": exchange_entry,
-                        "unrealizedPnl": bpos.get("unrealizedPnl"),
-                    },
-                })
-                asyncio.create_task(send_telegram(
-                    f"🚨 CRITICAL {db_sym} — DIVERGENCE DB↔Binance détectée !\n"
-                    f"DB: {db_direction} entry={db_entry} qty={db_qty}\n"
-                    f"Binance: {binance_direction} entry={exchange_entry} qty={exchange_qty}\n"
-                    f"⚠️ Résolution manuelle requise — le bot NE FERME PAS cette position.\n"
-                    f"Corriger la DB ou fermer manuellement sur Binance.",
-                    config
-                ))
+            align_result = await _align_db_with_exchange(
+                pos=pos, pos_id=pos_id, db_sym=db_sym, direction=direction,
+                bpos=bpos, db_qty=db_qty, config=config,
+            )
+            if align_result["should_continue"]:
                 continue
-
-            # B2 — correction quantité
-            if db_qty > 0 and abs(exchange_qty - db_qty) > (0.01 * db_qty):
-                db.update_position(pos_id, {"current_quantity": exchange_qty})
-                db.bump_reconcile_version(pos_id)
-                db.insert_reconcile_log(pos_id, "QTY_MISMATCH", {
-                    "db_qty": db_qty,
-                    "exchange_qty": exchange_qty,
-                    "delta_pct": round(abs(exchange_qty - db_qty) / db_qty * 100, 2),
-                })
-                log.info(f"sync_all {db_sym} — qty corrigée: {db_qty} → {exchange_qty}")
-
-                if exchange_qty < (db_qty * 0.05):
-                    db.update_position(pos_id, {
-                        "status": "closed",
-                        "exit_reason": "RECONCILE_FULLY_CLOSED",
-                        "exit_date": datetime.now(timezone.utc).isoformat(),
-                    })
-                    db.bump_reconcile_version(pos_id)
-                    db.insert_reconcile_log(pos_id, "FULLY_CLOSED_QTY_ZERO", {
-                        "db_qty": db_qty,
-                        "exchange_qty": exchange_qty,
-                    })
-                    asyncio.create_task(send_telegram(
-                        f"⚠️ {db_sym} — Position fermée (qty résiduelle ~0 sur Binance).",
-                        config
-                    ))
-                    continue
+            exchange_qty = align_result["exchange_qty"]
 
             reconcile_result = await reconcile_sl_tp_orders(
                 pos=pos, db_sym=db_sym, norm_sym=norm_sym,
