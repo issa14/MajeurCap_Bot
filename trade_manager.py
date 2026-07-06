@@ -26,6 +26,11 @@ from execution import execute_signal, update_sl_order, init_trading_exchange
 from config_loader import get_config
 from database import db
 from telegram_utils import send_telegram
+from exchange.normalize import get_raw_order_type
+from risk.circuit_breaker import (
+    ProtectionState, SL_CONFIG, TP_CONFIG,
+    is_blocked, on_failure, on_success, should_alert, record_alert_sent,
+)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 log = logging.getLogger("trade_manager")
@@ -389,18 +394,6 @@ def _get_stop_price(order: dict) -> float:
     return 0.0
 
 
-def _get_raw_order_type(order: dict) -> str:
-    """Retourne le type d'ordre brut Binance (ex: 'stop_market', 'take_profit_market'),
-    en minuscules. Sur les marchés futures, ccxt normalise STOP_MARKET et
-    TAKE_PROFIT_MARKET en 'market' au niveau du champ unifié order['type'],
-    mais le type brut original est conservé dans order['info']['type'].
-    """
-    raw_type = order.get("info", {}).get("type")
-    if raw_type:
-        return str(raw_type).lower()
-    return str(order.get("type", "")).lower()
-
-
 async def reconcile_positions_on_startup() -> None:
     """
     Délégue à sync_all() la réconciliation unifiée DB ↔ Binance.
@@ -486,7 +479,7 @@ async def _detect_exit_from_binance(
             "qty": f_qty,
             "price": f_price,
             "stop_price": sp,
-            "type": _get_raw_order_type(o),
+            "type": (get_raw_order_type(o) or "").lower(),
         })
 
         if sp is not None:
@@ -769,7 +762,7 @@ async def sync_all(config: dict, exchange=None) -> None:
             ) -> Optional[dict]:
                 """Matche un ordre ouvert par stopPrice + type (± tolérance)."""
                 for o in open_orders:
-                    o_type = _get_raw_order_type(o)
+                    o_type = (get_raw_order_type(o) or "").lower()
                     o_sp = _get_stop_price(o)
                     if not o_sp or o_type != order_type:
                         continue
@@ -906,17 +899,33 @@ async def sync_all(config: dict, exchange=None) -> None:
                 if spec["price"] <= 0 or spec["qty"] <= 0:
                     continue
 
-                # ── Circuit breaker par label ──
+                # ── Circuit breaker par label (cooldown temporel, jamais permanent) ──
+                now = datetime.now(timezone.utc)
+
+                def _parse_dt(iso_str):
+                    return datetime.fromisoformat(iso_str) if iso_str else None
+
                 if spec["label"] == "SL":
-                    failures = pos.get("sl_sync_failures", 0)
-                    if failures >= 3:
-                        log.warning(f"sync_all {db_sym} — SL circuit breaker ({failures} échecs)")
+                    state = ProtectionState(
+                        failures=pos.get("sl_sync_failures", 0),
+                        cooldown_until=_parse_dt(pos.get("sl_cooldown_until")),
+                        last_alert_at=_parse_dt(pos.get("last_sl_alert_at")),
+                    )
+                    if is_blocked(state, SL_CONFIG, now):
+                        log.warning(
+                            f"sync_all {db_sym} — SL en cooldown jusqu'à {state.cooldown_until.isoformat()}"
+                        )
                         continue
                 else:
-                    # TP1/TP2 partagent le même compteur tp_sync_failures, seuil 5
-                    tp_failures = pos.get("tp_sync_failures", 0)
-                    if tp_failures >= 5:
-                        log.warning(f"sync_all {db_sym} — TP circuit breaker ({tp_failures} échecs)")
+                    state = ProtectionState(
+                        failures=pos.get("tp_sync_failures", 0),
+                        cooldown_until=_parse_dt(pos.get("tp_cooldown_until")),
+                        last_alert_at=None,
+                    )
+                    if is_blocked(state, TP_CONFIG, now):
+                        log.warning(
+                            f"sync_all {db_sym} — TP en cooldown jusqu'à {state.cooldown_until.isoformat()}"
+                        )
                         continue
 
                 futures_sym = _to_futures_symbol(db_sym)
@@ -930,7 +939,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                     fresh_orders = await exchange.fetch_open_orders(futures_sym)
                     already_exists = None
                     for o in fresh_orders:
-                        o_type = _get_raw_order_type(o)
+                        o_type = (get_raw_order_type(o) or "").lower()
                         o_sp = _get_stop_price(o)
                         o_ro = o.get("reduceOnly", False) or o.get("info", {}).get("reduceOnly") == "true"
                         if not o_sp or not o_ro:
@@ -1050,37 +1059,31 @@ async def sync_all(config: dict, exchange=None) -> None:
                             except Exception as re:
                                 log.error(f"sync_all {db_sym} — échec retry post-cleanup: {re}")
 
-                    # ── Circuit breaker ──
+                    # ── Circuit breaker (cooldown, avec ré-alerte périodique) ──
                     if spec["label"] == "SL":
                         new_failures = db.increment_sync_failure(pos_id)
-                        log.warning(f"sync_all {db_sym} — échec SL #{new_failures}/3")
-                        if new_failures >= 3:
-                            last_alert = pos.get("last_sl_alert_at")
-                            if not last_alert:
-                                db.set_last_sl_alert(pos_id)
-                                asyncio.create_task(send_telegram(
-                                    f"🚨 CRITICAL {db_sym} — SL non recréé depuis 3 cycles !\n"
-                                    f"Position SANS stop-loss.\n"
-                                    f"Qty: {exchange_qty} | Direction: {direction}\n"
-                                    f"⚠️ Intervention manuelle requise.", config
-                                ))
-                                db.insert_reconcile_log(pos_id, "SL_CIRCUIT_BREAKER", {
-                                    "failures": new_failures,
-                                    "last_price": sl_price,
-                                })
+                        new_state = on_failure(state, SL_CONFIG, now)
+                        log.warning(f"sync_all {db_sym} — échec SL #{new_failures}/{SL_CONFIG.failure_threshold}")
+                        if new_state.cooldown_until:
+                            db.set_sl_cooldown(pos_id, new_state.cooldown_until.isoformat())
+                        if should_alert(new_state, SL_CONFIG, now):
+                            db.set_last_sl_alert(pos_id)
+                            asyncio.create_task(send_telegram(
+                                f"🚨 CRITICAL {db_sym} — SL non recréé ({new_failures} échecs) !\n"
+                                f"Position SANS stop-loss. Cooldown jusqu'à {new_state.cooldown_until}.\n"
+                                f"Qty: {exchange_qty} | Direction: {direction}\n"
+                                f"⚠️ Intervention manuelle requise.", config
+                            ))
+                            db.insert_reconcile_log(pos_id, "SL_CIRCUIT_BREAKER", {
+                                "failures": new_failures,
+                                "last_price": sl_price,
+                                "cooldown_until": new_state.cooldown_until.isoformat() if new_state.cooldown_until else None,
+                            })
                     else:
                         new_failures = db.increment_tp_sync_failure(pos_id)
-                        log.warning(f"sync_all {db_sym} — échec TP #{new_failures}/5")
-                        if new_failures >= 5:
-                            asyncio.create_task(send_telegram(
-                                f"⚠️ {db_sym} — TP non recréé depuis 5 cycles.\n"
-                                f"La surveillance logicielle (check_position) prend le relais.\n"
-                                f"TP1: {tp1_price} | TP2: {tp2_price}",
-                                config
-                            ))
-                            db.insert_reconcile_log(pos_id, "TP_CIRCUIT_BREAKER", {
-                                "failures": new_failures,
-                            })
+                        new_state = on_failure(state, TP_CONFIG, now)
+                        if new_state.cooldown_until:
+                            db.set_tp_cooldown(pos_id, new_state.cooldown_until.isoformat())
 
                     asyncio.create_task(send_telegram(
                         f"⚠️ {db_sym} — Échec recréation {spec['label']}.\nErreur: {err_str}", config

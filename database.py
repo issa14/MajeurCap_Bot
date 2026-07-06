@@ -60,6 +60,8 @@ class DatabaseManager:
                 ("last_sl_alert_at",    "ALTER TABLE positions ADD COLUMN last_sl_alert_at TEXT"),
                 ("reconcile_version",   "ALTER TABLE positions ADD COLUMN reconcile_version INTEGER DEFAULT 0"),
                 ("tp_sync_failures",    "ALTER TABLE positions ADD COLUMN tp_sync_failures INTEGER DEFAULT 0"),
+                ("sl_cooldown_until",   "ALTER TABLE positions ADD COLUMN sl_cooldown_until TEXT"),
+                ("tp_cooldown_until",   "ALTER TABLE positions ADD COLUMN tp_cooldown_until TEXT"),
             ]
             for col_name, alter_sql in migrations:
                 if col_name not in columns:
@@ -317,7 +319,8 @@ class DatabaseManager:
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE positions SET sl_sync_failures = 0, last_sl_alert_at = NULL WHERE id = ?",
+                "UPDATE positions SET sl_sync_failures = 0, last_sl_alert_at = NULL, "
+                "sl_cooldown_until = NULL WHERE id = ?",
                 (pos_id,)
             )
             conn.commit()
@@ -340,8 +343,28 @@ class DatabaseManager:
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE positions SET tp_sync_failures = 0 WHERE id = ?",
+                "UPDATE positions SET tp_sync_failures = 0, tp_cooldown_until = NULL WHERE id = ?",
                 (pos_id,)
+            )
+            conn.commit()
+
+    def set_sl_cooldown(self, pos_id: int, cooldown_until_iso: str) -> None:
+        """Enregistre la fin du cooldown SL (ISO 8601 UTC)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET sl_cooldown_until = ? WHERE id = ?",
+                (cooldown_until_iso, pos_id)
+            )
+            conn.commit()
+
+    def set_tp_cooldown(self, pos_id: int, cooldown_until_iso: str) -> None:
+        """Enregistre la fin du cooldown TP (ISO 8601 UTC)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE positions SET tp_cooldown_until = ? WHERE id = ?",
+                (cooldown_until_iso, pos_id)
             )
             conn.commit()
 
