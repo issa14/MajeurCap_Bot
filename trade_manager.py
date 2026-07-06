@@ -389,6 +389,18 @@ def _get_stop_price(order: dict) -> float:
     return 0.0
 
 
+def _get_raw_order_type(order: dict) -> str:
+    """Retourne le type d'ordre brut Binance (ex: 'stop_market', 'take_profit_market'),
+    en minuscules. Sur les marchés futures, ccxt normalise STOP_MARKET et
+    TAKE_PROFIT_MARKET en 'market' au niveau du champ unifié order['type'],
+    mais le type brut original est conservé dans order['info']['type'].
+    """
+    raw_type = order.get("info", {}).get("type")
+    if raw_type:
+        return str(raw_type).lower()
+    return str(order.get("type", "")).lower()
+
+
 async def reconcile_positions_on_startup() -> None:
     """
     Délégue à sync_all() la réconciliation unifiée DB ↔ Binance.
@@ -474,7 +486,7 @@ async def _detect_exit_from_binance(
             "qty": f_qty,
             "price": f_price,
             "stop_price": sp,
-            "type": o.get("type", ""),
+            "type": _get_raw_order_type(o),
         })
 
         if sp is not None:
@@ -757,7 +769,7 @@ async def sync_all(config: dict, exchange=None) -> None:
             ) -> Optional[dict]:
                 """Matche un ordre ouvert par stopPrice + type (± tolérance)."""
                 for o in open_orders:
-                    o_type = o.get("type", "")
+                    o_type = _get_raw_order_type(o)
                     o_sp = _get_stop_price(o)
                     if not o_sp or o_type != order_type:
                         continue
@@ -918,7 +930,7 @@ async def sync_all(config: dict, exchange=None) -> None:
                     fresh_orders = await exchange.fetch_open_orders(futures_sym)
                     already_exists = None
                     for o in fresh_orders:
-                        o_type = o.get("type", "")
+                        o_type = _get_raw_order_type(o)
                         o_sp = _get_stop_price(o)
                         o_ro = o.get("reduceOnly", False) or o.get("info", {}).get("reduceOnly") == "true"
                         if not o_sp or not o_ro:
