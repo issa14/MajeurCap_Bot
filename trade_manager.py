@@ -614,6 +614,37 @@ async def _handle_position_missing_on_exchange(
         ))
 
 
+async def _report_orphan_position(norm_sym: str, bpos: dict, config: dict) -> None:
+    """Log + alerte Telegram pour une position présente sur Binance mais absente
+    de la DB. Ne fait AUCUNE action corrective (pas de fermeture automatique) —
+    review manuelle requise.
+
+    Extrait de sync_all() à l'étape 8 du refactor — logique inchangée.
+    """
+    side = bpos.get("side", "")
+    direction = "LONG" if side == "long" else "SHORT"
+    entry_price = bpos.get("entryPrice") or bpos.get("info", {}).get("entryPrice", 0)
+    contracts = float(bpos.get("contracts", 0))
+
+    orphan_details = {
+        "symbol": norm_sym,
+        "direction": direction,
+        "qty": contracts,
+        "entry_price": entry_price,
+        "unrealizedPnl": bpos.get("unrealizedPnl"),
+        "raw_symbol": bpos.get("symbol", norm_sym),
+        "leverage": bpos.get("leverage"),
+    }
+    log.warning(f"sync_all {norm_sym} — position ORPHELINE sur Binance ({direction} qty={contracts})")
+    db.insert_reconcile_log(None, "ORPHAN_POSITION_BINANCE", orphan_details)
+    asyncio.create_task(send_telegram(
+        f"🚨 {norm_sym} — Position ORPHELINE sur Binance !\n"
+        f"Direction: {direction} | Qty: {contracts} | Entry: {entry_price}\n"
+        f"⚠️ Non insérée en DB — fermer manuellement sur Binance.",
+        config
+    ))
+
+
 async def sync_all(config: dict, exchange=None) -> None:
     """
     Réconciliation unifiée DB ↔ Binance (positions + ordres SL/TP) — v2.
@@ -818,28 +849,7 @@ async def sync_all(config: dict, exchange=None) -> None:
         # ══════════════════════════════════════════════════════════════════
         for norm_sym, bpos in binance_by_norm.items():
             if norm_sym not in db_norm_set:
-                side = bpos.get("side", "")
-                direction = "LONG" if side == "long" else "SHORT"
-                entry_price = bpos.get("entryPrice") or bpos.get("info", {}).get("entryPrice", 0)
-                contracts = float(bpos.get("contracts", 0))
-
-                orphan_details = {
-                    "symbol": norm_sym,
-                    "direction": direction,
-                    "qty": contracts,
-                    "entry_price": entry_price,
-                    "unrealizedPnl": bpos.get("unrealizedPnl"),
-                    "raw_symbol": bpos.get("symbol", norm_sym),
-                    "leverage": bpos.get("leverage"),
-                }
-                log.warning(f"sync_all {norm_sym} — position ORPHELINE sur Binance ({direction} qty={contracts})")
-                db.insert_reconcile_log(None, "ORPHAN_POSITION_BINANCE", orphan_details)
-                asyncio.create_task(send_telegram(
-                    f"🚨 {norm_sym} — Position ORPHELINE sur Binance !\n"
-                    f"Direction: {direction} | Qty: {contracts} | Entry: {entry_price}\n"
-                    f"⚠️ Non insérée en DB — fermer manuellement sur Binance.",
-                    config
-                ))
+                await _report_orphan_position(norm_sym, bpos, config)
 
     finally:
         if own_exchange:
