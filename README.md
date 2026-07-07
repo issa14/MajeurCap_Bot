@@ -73,11 +73,10 @@ Keltner Channels, volume). Chaque indicateur actif compte pour 1 confluence.
 
 Résultats out-of-sample (walk-forward) — configuration actuelle :
 
-| Configuration | Sharpe | PF | Winrate | Max DD |
-|---------------|--------|-----|---------|--------|
-| 4 confluences, SL 1.0×ATR | **0.83** | 1.71 | ~45% | — |
-| Avec trailing SL | 0.31 | — | — | — |
-| 3 confluences (ancien) | ~0.28 | — | — | — |
+| Configuration | Sharpe | Contexte |
+|---------------|--------|----------|
+| 4 confluences, SL 1.0×ATR (actuelle) | **0.83** (out-of-sample) | Historical 2.21 → dégradation 62.5%, PnL OOS +135% — pas d'overfitting sévère |
+| Avec trailing SL | 0.31 | Dégrade fortement la config actuelle — trailing éliminé définitivement |
 
 > `min_confluences: 4` est le changement de config le plus impactant validé
 > à ce jour (robustesse ×3 par rapport à 3 confluences).
@@ -207,7 +206,7 @@ des fonctions nommées et testées.
 | 2026-07 | Refactoring `sync_all()` : 590→148 lignes, 9 étapes | Maintenabilité, testabilité |
 | 2026-07 | Circuit breaker SL/TP : deadlock → cooldown temporel | Correction bug production BNB/USDT |
 | 2026-07 | `exchange/normalize.py` : correction bugs ccxt 4.5.64 | Fiabilité ordres stop |
-| 2026-06 | `min_confluences` : 3→4 | Sharpe ×3 (0.28→0.83) |
+| 2026-06 | `min_confluences` : 3→4 | Score de robustesse ×3, Sharpe OOS 0.83 |
 | 2026-06 | Trailing SL éliminé définitivement | Sharpe 1.83 sans, 0.31 avec |
 
 ---
